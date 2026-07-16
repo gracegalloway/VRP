@@ -1,0 +1,173 @@
+import math
+import matplotlib.pyplot as plt
+
+
+#Instance Set up
+
+#vertex coordinates
+coordinates = {
+    0: (30, 40),   # Depot
+    1: (37,52),
+    2: (49,49),
+    3: (52,64),
+    4: (31,62),
+    5: (52,33),
+    6: (42,41),
+    7: (52,41),
+    8: (57,58),
+    9: (62,42),
+    10: (42, 57),
+    11: (27,68),
+    12: (43,67),
+    13: (58,48),
+    14: (58,27),
+    15: (37,69)
+}
+
+# Customer demands
+demands = {
+    0: 0,
+    1: 19,
+    2: 30,
+    3: 16,
+    4: 23,
+    5: 11,
+    6: 31,
+    7: 15,
+    8: 28,
+    9: 8,
+    10: 8, 
+    11: 7,
+    12: 14, 
+    13: 6,
+    14: 19,
+    15: 11
+}
+
+vehicle_capacity = 35
+
+#creating customer distances
+
+
+def distance(i, j):
+    x1, y1 = coordinates[i]
+    x2, y2 = coordinates[j]
+    return math.hypot(x2 - x1, y2 - y1)
+
+
+# Build distance matrix
+distance_matrix = {
+    (i, j): distance(i, j)
+    for i in coordinates
+    for j in coordinates
+}
+
+#nearest neighbor construction heuristic
+
+def nearest_neighbour_cvrp():
+    
+    unvisited = set(coordinates.keys())
+    unvisited.remove(0)
+    
+    routes = []
+    
+    while unvisited:
+        
+        route = [0]
+        load = 0
+        current = 0
+        
+        while True:
+            
+            feasible = [
+                node for node in unvisited
+                if load + demands[node] <= vehicle_capacity
+            ]
+            
+            if not feasible:
+                break
+            
+            next_node = min(
+                feasible, 
+                key=lambda node:distance_matrix[(current,node)]
+            )
+            
+            route.append(next_node)
+            load += demands[next_node]
+            current = next_node
+            unvisited.remove(next_node)
+            
+        route.append(0)
+        routes.append((route,load))
+        
+    return routes
+
+#calculate route cost
+
+def route_cost(route):
+    cost = 0
+    for i in range(len(route) - 1):
+        cost += distance_matrix[(route[i], route[i + 1])]
+    return cost
+
+routes = nearest_neighbour_cvrp()
+
+total_cost = 0
+
+print("Routes\n")
+
+for i, (route, load) in enumerate(routes, start=1):
+    cost = route_cost(route)
+    total_cost += cost
+
+    print(f"Vehicle {i}")
+    print(" Route:", route)
+    print(" Load :", load)
+    print(f" Cost : {cost:.2f}\n")
+
+print(f"Total distance = {total_cost:.2f}")
+
+def plot_routes(routes, coordinates):
+    plt.figure(figsize=(8, 8))
+
+    # Plot all customers
+    for node, (x, y) in coordinates.items():
+        if node == 0:
+            plt.scatter(x, y, c='red', s=120, marker='s', label='Depot')
+        else:
+            plt.scatter(x, y, c='black', s=50)
+
+        plt.text(x + 0.8, y + 0.8, str(node), fontsize=10)
+
+
+    colours = [
+        'blue', 'green', 'orange', 'purple',
+        'brown', 'cyan', 'magenta', 'olive'
+    ]
+
+    # Draw each route
+    for i, (route, load) in enumerate(routes):
+        colour = colours[i % len(colours)]
+
+        for j in range(len(route) - 1):
+            start = route[j]
+            end = route[j + 1]
+
+            x = [coordinates[start][0], coordinates[end][0]]
+            y = [coordinates[start][1], coordinates[end][1]]
+
+            plt.plot(x, y,
+                     color=colour,
+                     linewidth=2,
+                     label=f'Vehicle {i+1}' if j == 0 else "")
+
+    plt.title("Nearest Neighbour CVRP Solution")
+    plt.xlabel("x")
+    plt.ylabel("y")
+    plt.grid(True)
+    plt.legend()
+    plt.axis('equal')
+    plt.show()
+
+# Draw the solution
+plot_routes(routes, coordinates)
