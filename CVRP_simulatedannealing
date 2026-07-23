@@ -1,0 +1,181 @@
+import numpy as np
+import random
+import time
+import matplotlib.pyplot as plt
+import math
+from Functions.functions import *
+
+# vechile capacity
+vehicle_capacity = 35
+
+#vertex coordinates
+coordinates = {
+    0: (30, 40),   # Depot
+    1: (37,52),
+    2: (49,49),
+    3: (52,64),
+    4: (31,62),
+    5: (52,33),
+    6: (42,41),
+    7: (52,41),
+    8: (57,58),
+    9: (62,42),
+    10: (42, 57),
+    11: (27,68),
+    12: (43,67),
+    13: (58,48),
+    14: (58,27),
+    15: (37,69)
+}
+
+# Customer demands
+demands = {
+    0: 0,
+    1: 19,
+    2: 30,
+    3: 16,
+    4: 23,
+    5: 11,
+    6: 31,
+    7: 15,
+    8: 28,
+    9: 8,
+    10: 8, 
+    11: 7,
+    12: 14, 
+    13: 6,
+    14: 19,
+    15: 11
+}
+
+#creating customer distances
+
+
+def distance(i, j):
+    x1, y1 = coordinates[i]
+    x2, y2 = coordinates[j]
+    return math.hypot(x2 - x1, y2 - y1)
+
+n = len(coordinates)
+
+# Build distance matrix
+distance_matrix = np.zeros((n,n))
+
+for i in range(n):
+    for j in range(n):
+        distance_matrix[i,j] = distance(i,j)
+
+def cvrp_route_cost(route):
+    cost = 0
+    for i in range(len(route) - 1):
+        cost += distance_matrix[(route[i], route[i + 1])]
+    return cost
+
+def nearest_neighbour_clusters(coordinates, demands, vehicle_capacity):
+
+    nodes = set(range(1, len(coordinates)))  # no depot
+    clusters = []
+
+    while nodes:
+
+        cluster = []
+        load = 0
+        current_node = 0  # start from depot
+
+
+        while True:
+
+            feasible = [
+                node for node in nodes
+                if load + demands[node] <= vehicle_capacity
+            ]
+
+            if not feasible:
+                break
+
+
+            # choose nearest feasible node
+            next_node = min(
+                feasible,
+                key=lambda node: distance(current_node, node)
+            )
+
+
+            cluster.append(next_node)
+
+            load += demands[next_node]
+
+            nodes.remove(next_node)
+
+            current_node = next_node
+
+
+        clusters.append(cluster)
+
+
+    return clusters
+
+
+
+def simulated_annealing_CVRP():
+    # cluster first
+    clusters = nearest_neighbour_clusters(
+    coordinates,
+    demands,
+    vehicle_capacity
+)
+
+    for cluster in clusters:
+        assert sum(demands[i] for i in cluster) <= vehicle_capacity
+
+    routes = []
+
+    for cluster in clusters:
+
+        nodes = [0] + cluster
+
+        sub_dist = distance_matrix[np.ix_(nodes,nodes)]
+
+        # SA parameters based on cluster size
+        cluster_size = len(nodes)
+
+        temperature = 20 * cluster_size
+
+        if cluster_size <= 10:
+            cooling = 0.995
+        elif cluster_size <= 30:
+            cooling = 0.997
+        else:
+            cooling = 0.999
+
+        sol = solve_tsp(sub_dist, TIME=0.5*cluster_size, temperature=temperature, cooling=cooling)
+
+        route = [nodes[i] for i in sol["route"]]
+        route = init_depot(route)
+
+        load = sum(demands[node] for node in cluster)
+
+        routes.append((route, load))
+
+    return routes
+
+routes = simulated_annealing_CVRP()
+
+total_cost = 0
+
+print("Routes\n")
+
+for i, (route, load) in enumerate(routes, start=1):
+    cost = cvrp_route_cost(route)
+    total_cost += cost
+
+    print(f"Vehicle {i}")
+    print(" Route:", route)
+    print(" Load :", load)
+    print(f" Cost : {cost:.2f}\n")
+
+print(f"Total distance = {total_cost:.2f}")
+
+
+
+
