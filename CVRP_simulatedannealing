@@ -116,8 +116,8 @@ def nearest_neighbour_clusters(coordinates, demands, vehicle_capacity):
     return clusters
 
 
-
-def simulated_annealing_CVRP():
+# nearest neighbour clusters then simulated annealing routing
+def nn_sa_CVRP():
     # cluster first
     clusters = nearest_neighbour_clusters(
     coordinates,
@@ -159,23 +159,133 @@ def simulated_annealing_CVRP():
 
     return routes
 
-routes = simulated_annealing_CVRP()
+# sweep to form clusters
+def sweep_clusters(coordinates, demands, vehicle_capacity):
+    depot = coordinates[0]
+    clusters = []
+    nodes = []
 
-total_cost = 0
+    # Calculate angle of each node relative to depot
+    for node in range(1, len(coordinates)):
 
-print("Routes\n")
+        x, y = coordinates[node]
 
-for i, (route, load) in enumerate(routes, start=1):
+        angle = math.atan2(
+            y - depot[1],
+            x - depot[0]
+        )
+
+        nodes.append((node, angle))
+
+
+    # Sort nodes by angle around depot
+    nodes.sort(key=lambda x: x[1])
+
+    # start at random node
+    start = random.randint(0, len(nodes)-1)
+    nodes = nodes[start:] + nodes[:start]
+
+    cluster = []
+    load = 0
+
+    # Sweep around depot
+    for node, angle in nodes:
+
+        demand = demands[node]
+
+        # If customer does not fit, get new vehicle
+        if load + demand > vehicle_capacity:
+
+            clusters.append(cluster)
+
+            cluster = []
+            load = 0
+
+
+        cluster.append(node)
+        load += demand
+
+    # Add final cluster
+    if cluster:
+        clusters.append(cluster)
+
+    return clusters
+
+
+# sweep clusters then simulated annealing routing
+def sweep_sa_CVRP():
+    # cluster first
+    clusters = sweep_clusters(
+    coordinates,
+    demands,
+    vehicle_capacity
+)
+
+    for cluster in clusters:
+        assert sum(demands[i] for i in cluster) <= vehicle_capacity
+
+    routes = []
+
+    for cluster in clusters:
+
+        nodes = [0] + cluster
+
+        sub_dist = distance_matrix[np.ix_(nodes,nodes)]
+
+        # SA parameters based on cluster size
+        cluster_size = len(nodes)
+
+        temperature = 20 * cluster_size
+
+        if cluster_size <= 10:
+            cooling = 0.995
+        elif cluster_size <= 30:
+            cooling = 0.997
+        else:
+            cooling = 0.999
+
+        sol = solve_tsp(sub_dist, TIME=0.5*cluster_size, temperature=temperature, cooling=cooling)
+
+        route = [nodes[i] for i in sol["route"]]
+        route = init_depot(route)
+
+        load = sum(demands[node] for node in cluster)
+
+        routes.append((route, load))
+
+    return routes
+
+routes_nn_sa = nn_sa_CVRP()
+routes_sweep_sa = sweep_sa_CVRP()
+
+total_cost_nn_sa = 0
+total_cost_sweep_sa = 0
+
+print("Routes_nn_sa \n")
+
+for i, (route, load) in enumerate(routes_nn_sa, start=1):
     cost = cvrp_route_cost(route)
-    total_cost += cost
+    total_cost_nn_sa += cost
 
     print(f"Vehicle {i}")
     print(" Route:", route)
     print(" Load :", load)
     print(f" Cost : {cost:.2f}\n")
 
-print(f"Total distance = {total_cost:.2f}")
+print(f"Total distance = {total_cost_nn_sa:.2f}")
 
+print("Routes_sweep_sa \n")
+
+for i, (route, load) in enumerate(routes_sweep_sa, start=1):
+    cost = cvrp_route_cost(route)
+    total_cost_sweep_sa += cost
+
+    print(f"Vehicle {i}")
+    print(" Route:", route)
+    print(" Load :", load)
+    print(f" Cost : {cost:.2f}\n")
+
+print(f"Total distance = {total_cost_sweep_sa:.2f}")
 
 
 
