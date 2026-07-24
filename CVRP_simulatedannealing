@@ -255,11 +255,52 @@ def sweep_sa_CVRP():
 
     return routes
 
+# route first simulated annealing then cluster second using splitting CVRP
+def sa_split_CVRP():
+    n = len(coordinates)
+
+    # all customers no depot
+    nodes = list(range(1, n))
+
+    sub_dist = distance_matrix[np.ix_(nodes, nodes)]
+
+    # route first via sa
+    sol = solve_tsp(sub_dist, TIME=0.5*n, temperature=250, cooling=0.999)
+
+    big_route = [nodes[node] for node in sol["route"]]
+
+    routes = []
+    current_route = [0]      # start at depot
+    current_load = 0
+
+    # cluster by splitting 
+    for node in big_route:
+
+        if current_load + demands[node] <= vehicle_capacity:
+            current_route.append(node)
+            current_load += demands[node]
+
+        else:
+            # return to depot
+            current_route.append(0)
+            routes.append((current_route, current_load))
+
+            # new route
+            current_route = [0, node]
+            current_load = demands[node]
+
+    current_route.append(0)
+    routes.append((current_route, current_load))
+
+    return routes
+
 routes_nn_sa = nn_sa_CVRP()
 routes_sweep_sa = sweep_sa_CVRP()
+routes_sa_split = sa_split_CVRP()
 
 total_cost_nn_sa = 0
 total_cost_sweep_sa = 0
+total_cost_sa_split = 0
 
 print("Routes_nn_sa \n")
 
@@ -286,6 +327,19 @@ for i, (route, load) in enumerate(routes_sweep_sa, start=1):
     print(f" Cost : {cost:.2f}\n")
 
 print(f"Total distance = {total_cost_sweep_sa:.2f}")
+
+print("Routes_sa_split \n")
+
+for i, (route, load) in enumerate(routes_sa_split, start=1):
+    cost = cvrp_route_cost(route)
+    total_cost_sa_split += cost
+
+    print(f"Vehicle {i}")
+    print(" Route:", route)
+    print(" Load :", load)
+    print(f" Cost : {cost:.2f}\n")
+
+print(f"Total distance = {total_cost_sa_split:.2f}")
 
 
 
