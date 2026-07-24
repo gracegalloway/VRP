@@ -48,9 +48,8 @@ demands = {
     15: 11
 }
 
-#creating customer distances
 
-
+# create customer distances
 def distance(i, j):
     x1, y1 = coordinates[i]
     x2, y2 = coordinates[j]
