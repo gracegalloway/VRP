@@ -2,6 +2,7 @@ import numpy as np
 import random
 import time
 import matplotlib.pyplot as plt
+import math
 
 # Route cost
 def tsp_route_cost(route, dist):
@@ -106,7 +107,7 @@ def solve_tsp(incidence, TIME, temperature, cooling):
     }
 
 
-def nearest_neighbour_cvrp(coordinates, demands, vechile_capacity):
+def nearest_neighbour_cvrp(coordinates, demands, distance_matrix, vehicle_capacity):
     
     unvisited = set(coordinates.keys())
     unvisited.remove(0)
@@ -130,24 +131,24 @@ def nearest_neighbour_cvrp(coordinates, demands, vechile_capacity):
                 break
             
             next_node = min(
-                feasible, 
-                key=lambda node:distance_matrix[(current,node)]
+                feasible,
+                key=lambda node: distance_matrix[current,node]
             )
             
             route.append(next_node)
+
             load += demands[next_node]
+
             current = next_node
+
             unvisited.remove(next_node)
             
         route.append(0)
+
         routes.append((route,load))
         
     return routes
 
-def distance(i, j):
-    x1, y1 = coordinates[i]
-    x2, y2 = coordinates[j]
-    return math.hypot(x2 - x1, y2 - y1)
 
 # set depot as first and last vertex in route
 def init_depot(route):
@@ -156,7 +157,7 @@ def init_depot(route):
     route.append(0)
     return route
 
-def sa_split_CVRP():
+def sa_split_CVRP(coordinates, demands, distance_matrix, vehicle_capacity):
     n = len(coordinates)
 
     # all customers no depot
@@ -165,7 +166,7 @@ def sa_split_CVRP():
     sub_dist = distance_matrix[np.ix_(nodes, nodes)]
 
     # route first via sa
-    sol = solve_tsp(sub_dist, TIME=0.5*n, temperature=250, cooling=0.999)
+    sol = solve_tsp(sub_dist, TIME=10, temperature=250, cooling=0.999)
 
     big_route = [nodes[node] for node in sol["route"]]
 
@@ -194,7 +195,7 @@ def sa_split_CVRP():
 
     return routes
 
-def sweep_sa_CVRP():
+def sweep_sa_CVRP(coordinates, demands, distance_matrix, vehicle_capacity):
     # cluster first
     clusters = sweep_clusters(
     coordinates,
@@ -225,7 +226,7 @@ def sweep_sa_CVRP():
         else:
             cooling = 0.999
 
-        sol = solve_tsp(sub_dist, TIME=0.5*cluster_size, temperature=temperature, cooling=cooling)
+        sol = solve_tsp(sub_dist, TIME=10, temperature=temperature, cooling=cooling)
 
         route = [nodes[i] for i in sol["route"]]
         route = init_depot(route)
@@ -287,7 +288,7 @@ def sweep_clusters(coordinates, demands, vehicle_capacity):
 
     return clusters
 
-def nn_sa_CVRP():
+def nn_sa_CVRP(coordinates, demands, distance_matrix, vehicle_capacity):
     # cluster first
     clusters = nearest_neighbour_clusters(
     coordinates,
@@ -318,7 +319,7 @@ def nn_sa_CVRP():
         else:
             cooling = 0.999
 
-        sol = solve_tsp(sub_dist, TIME=0.5*cluster_size, temperature=temperature, cooling=cooling)
+        sol = solve_tsp(sub_dist, TIME=10, temperature=temperature, cooling=cooling)
 
         route = [nodes[i] for i in sol["route"]]
         route = init_depot(route)
@@ -331,14 +332,17 @@ def nn_sa_CVRP():
 
 def nearest_neighbour_clusters(coordinates, demands, vehicle_capacity):
 
-    nodes = set(range(1, len(coordinates)))  # no depot
+    nodes = set(range(1, len(coordinates)))
+
     clusters = []
 
     while nodes:
 
         cluster = []
+
         load = 0
-        current_node = 0  # start from depot
+
+        current_node = 0
 
 
         while True:
@@ -348,14 +352,17 @@ def nearest_neighbour_clusters(coordinates, demands, vehicle_capacity):
                 if load + demands[node] <= vehicle_capacity
             ]
 
+
             if not feasible:
                 break
 
 
-            # choose nearest feasible node
             next_node = min(
                 feasible,
-                key=lambda node: distance(current_node, node)
+                key=lambda node: math.hypot(
+                    coordinates[current_node][0] - coordinates[node][0],
+                    coordinates[current_node][1] - coordinates[node][1]
+                )
             )
 
 
@@ -372,3 +379,18 @@ def nearest_neighbour_clusters(coordinates, demands, vehicle_capacity):
 
 
     return clusters
+
+def total_cost(routes, distance_matrix):
+
+    total_cost = 0
+
+    for route, load in routes:
+
+        for i in range(len(route)-1):
+
+            total_cost += distance_matrix[
+                route[i],
+                route[i+1]
+            ]
+
+    return total_cost

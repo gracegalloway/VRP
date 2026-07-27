@@ -1,0 +1,160 @@
+import random
+import math
+import time
+import pandas as pd
+import numpy as np
+from Functions.functions import *
+
+def CVRP_setup(n, seed):
+
+    random.seed(seed)
+
+    coordinates = {
+        0: (50,50)
+    }
+
+    for i in range(1,n+1):
+        coordinates[i] = (
+            random.randint(0,100),
+            random.randint(0,100)
+        )
+
+
+    demands = {0:0}
+
+    for i in range(1,n+1):
+        demands[i] = random.randint(5,15)
+
+
+    return coordinates, demands
+
+def create_distance_matrix(coordinates):
+
+    n = len(coordinates)
+
+    distance_matrix = np.zeros((n,n))
+
+    for i in range(n):
+        for j in range(n):
+
+            x1,y1 = coordinates[i]
+            x2,y2 = coordinates[j]
+
+            distance_matrix[i,j] = math.hypot(
+                x2-x1,
+                y2-y1
+            )
+
+    return distance_matrix
+
+
+sizes = [20,50,80]
+vehicle_capacity = 35
+results = []
+
+
+for n in sizes:
+
+    for seed in range(5):
+
+        print("Testing:", n, seed)
+
+        coordinates, demands = CVRP_setup(
+            n,
+            seed
+        )
+
+        distance_matrix = create_distance_matrix(
+            coordinates
+        )
+
+
+        # NN + SA
+        start = time.time()
+
+        routes = nn_sa_CVRP(
+            coordinates,
+            demands,
+            distance_matrix,
+            vehicle_capacity
+        )
+
+        cost = total_cost(
+            routes,
+            distance_matrix
+        )
+
+        runtime = time.time()-start
+
+
+        results.append([
+            n,
+            seed,
+            "NN-SA",
+            cost,
+            runtime
+        ])
+
+
+
+        # Sweep + SA
+        start=time.time()
+
+        routes = sweep_sa_CVRP(
+            coordinates,
+            demands,
+            distance_matrix,
+            vehicle_capacity
+        )
+
+        cost = total_cost(
+            routes,
+            distance_matrix
+        )
+
+        runtime=time.time()-start
+
+
+        results.append([
+            n,
+            seed,
+            "Sweep-SA",
+            cost,
+            runtime
+        ])
+
+
+
+        # SA + Split
+        start=time.time()
+
+        routes = sa_split_CVRP(
+            coordinates,
+            demands,
+            distance_matrix,
+            vehicle_capacity
+        )
+
+        cost = total_cost(
+            routes,
+            distance_matrix
+        )
+
+        runtime=time.time()-start
+
+
+        results.append([
+            n,
+            seed,
+            "SA-Split",
+            cost,
+            runtime
+        ])
+
+
+# convert to dataframe
+results = pd.DataFrame(results)
+
+
+
+
