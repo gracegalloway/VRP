@@ -225,7 +225,7 @@ def intra_swap(solution):
     return sol
 
 ## reverses  a section of one route
-def intra_two_opt(solution):
+def intra_2_opt(solution):
 
     sol = copy.deepcopy(solution)
 
@@ -255,6 +255,89 @@ def intra_two_opt(solution):
 
     return sol
 
- 
+# pick perturbation
+def random_neighbour(solution):
 
+    move = random.choices(
+    [
+        inter_relocate,
+        inter_swap,
+        inter_2_opt,
+        intra_relocate,
+        intra_swap,
+        intra_2_opt
+    ],
+    weights=[1, 1, 1, 1, 1],
+    k=1
+    )[0]
+
+    return move(solution)
+
+# simulated annealing
+
+def simulated_annealing(
+    initial_temp=1000,
+    cooling_rate=0.995,
+    stopping_temp=1e-3,
+    iterations_per_temp=100
+):
+
+    # generate initial solution
+    current = initial_solution()
+    current_cost = total_cost(current)
+
+    # create copy of initial solution
+    best = copy.deepcopy(current)
+    # store cost of best solution
+    best_cost = current_cost
+
+    # set temperature
+    T = initial_temp
+
+    # search while temperatue greater than stopping temperature
+    while T > stopping_temp:
+
+        # repeat search several times before cooling
+        for _ in range(iterations_per_temp):
+
+            # perturb current solution
+            candidate = random_neighbor(current)
+            candidate_cost = total_cost(candidate)
+
+            # calculate cost difference
+            delta = candidate_cost - current_cost
+
+            # accept better solutions always
+            if delta < 0:
+
+                current = candidate
+                current_cost = candidate_cost
+
+            # accept worse sols with some probability
+            else:
+
+                probability = math.exp(-delta / T)
+
+                if random.random() < probability:
+                    current = candidate
+                    current_cost = candidate_cost
+
+            # save any new best sols
+            if current_cost < best_cost:
+                best = copy.deepcopy(current)
+                best_cost = current_cost
+
+        # reduce temperature (prob of accepting worse sols)
+        T *= cooling_rate
+
+    return best, best_cost
+
+best_solution, best_cost = simulated_annealing()
+
+print("Best Cost:", round(best_cost, 2))
+
+for i, route in enumerate(best_solution):
+    print(f"Vehicle {i+1}: 0 -> {' -> '.join(map(str, route))} -> 0")
+
+plot_solution(coords, best_solution)
     
