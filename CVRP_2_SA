@@ -140,7 +140,121 @@ def inter_swap(solution):
 
     return sol
 
+## exchange tails of two routes
+def inter_2_opt(solution):
+
+    sol = copy.deepcopy(solution)
+
+    # check at least two routes
+    if len(sol) < 2:
+        return sol
+
+    # routes with at least two customers
+    routes = [i for i, r in enumerate(sol) if len(r) >= 2]
+
+    # check at least two elidgible routes
+    if len(routes) < 2:
+        return sol
+
+    # pick two random routes
+    r1, r2 = random.sample(routes, 2)
+
+    # choose random customer in each route
+    i = random.randrange(len(sol[r1]))
+    j = random.randrange(len(sol[r2]))
+
+    # exchange route tails
+    new_route1 = sol[r1][:i] + sol[r2][j:]
+    new_route2 = sol[r2][:j] + sol[r1][i:]
+
+    # Check feasible
+    if (route_load(new_route1) <= vehicle_capacity and
+        route_load(new_route2) <= vehicle_capacity):
+
+        sol[r1] = new_route1
+        sol[r2] = new_route2
+
+    return sol
+
+
 # intra-route operations
 ## relocate customer in its own route
 def intra_relocate(solution):
+
+    sol = copy.deepcopy(solution)
+
+    if len(sol) == 0:
+            return sol
+    
+    # pick random route 
+    r = random.randrange(len(sol))
+
+    if len(sol[r]) == 0:
+        return sol
+
+    c_index = random.randrange(len(sol[r]))
+    # pick random customer in route and remove from route
+    customer = sol[r].pop(c_index)
+
+    # choose a new position in the same route
+    new_position = random.randrange(len(sol[r]) + 1)
+
+    # insert customer back into same route
+    sol[r].insert(new_position, customer)
+
+    return sol
+
+## swap customers in same route
+def intra_swap(solution):
+
+    sol = copy.deepcopy(solution)
+
+    # pick random route 
+    r = random.randrange(len(sol))
+
+    # check at least two customers in route
+    if len(sol[r]) < 2:
+        return sol
+
+    # choose two distinct customers
+    i, j = random.sample(range(len(sol[r])), 2)
+
+    # swap the customers
+    sol[r][i], sol[r][j] = sol[r][j], sol[r][i]
+
+    return sol
+
+## reverses  a section of one route
+def intra_two_opt(solution):
+
+    sol = copy.deepcopy(solution)
+
+    # find routes long enough for impactful reversal
+    routes = [r for r in sol if len(r) >= 4]
+
+    # check at least one elidgible route exists
+    if not routes:
+        return sol
+
+    # pick random route
+    r = random.choice(routes)
+    idx = sol.index(r)
+
+    # pick two customers in route
+    i, j = sorted(random.sample(range(len(r)), 2))
+
+    # ensure section to reverse is big enough
+    if j-i < 2:
+        return sol
+
+    # reverse section between selected customers
+    r[i:j] = reversed(r[i:j])
+
+    # replace og route
+    sol[idx] = r
+
+    return sol
+
+ 
+
     
