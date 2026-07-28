@@ -166,7 +166,7 @@ def sa_split_CVRP(coordinates, demands, distance_matrix, vehicle_capacity):
     sub_dist = distance_matrix[np.ix_(nodes, nodes)]
 
     # route first via sa
-    sol = solve_tsp(sub_dist, TIME=10, temperature=250, cooling=0.999)
+    sol = solve_tsp(sub_dist, TIME=10, temperature=1000, cooling=0.999)
 
     big_route = [nodes[node] for node in sol["route"]]
 
@@ -217,7 +217,7 @@ def sweep_sa_CVRP(coordinates, demands, distance_matrix, vehicle_capacity):
         # SA parameters based on cluster size
         cluster_size = len(nodes)
 
-        temperature = 20 * cluster_size
+        temperature = 100 * cluster_size
 
         if cluster_size <= 10:
             cooling = 0.995
@@ -226,7 +226,7 @@ def sweep_sa_CVRP(coordinates, demands, distance_matrix, vehicle_capacity):
         else:
             cooling = 0.999
 
-        sol = solve_tsp(sub_dist, TIME=10, temperature=temperature, cooling=cooling)
+        sol = solve_tsp(sub_dist, TIME=1, temperature=temperature, cooling=cooling)
 
         route = [nodes[i] for i in sol["route"]]
         route = init_depot(route)
@@ -310,7 +310,7 @@ def nn_sa_CVRP(coordinates, demands, distance_matrix, vehicle_capacity):
         # SA parameters based on cluster size
         cluster_size = len(nodes)
 
-        temperature = 20 * cluster_size
+        temperature = 100 * cluster_size
 
         if cluster_size <= 10:
             cooling = 0.995
@@ -319,7 +319,7 @@ def nn_sa_CVRP(coordinates, demands, distance_matrix, vehicle_capacity):
         else:
             cooling = 0.999
 
-        sol = solve_tsp(sub_dist, TIME=10, temperature=temperature, cooling=cooling)
+        sol = solve_tsp(sub_dist, TIME=1, temperature=temperature, cooling=cooling)
 
         route = [nodes[i] for i in sol["route"]]
         route = init_depot(route)
@@ -380,6 +380,8 @@ def nearest_neighbour_clusters(coordinates, demands, vehicle_capacity):
 
     return clusters
 
+
+
 def total_cost(routes, distance_matrix):
 
     total_cost = 0
@@ -394,3 +396,46 @@ def total_cost(routes, distance_matrix):
             ]
 
     return total_cost
+
+
+def plot_solution(coords, solution):
+    plt.figure(figsize=(8, 8))
+
+    # Plot depot
+    depot_x, depot_y = coords[0]
+    plt.scatter(depot_x, depot_y, c='red', s=150, marker='s', label='Depot')
+
+    # Plot customers
+    for i in range(1, len(coords)):
+        x, y = coords[i]
+        plt.scatter(x, y, c='blue', s=60)
+        plt.text(x + 0.5, y + 0.5, str(i), fontsize=9)
+
+    # Different colour for each route
+    colours = plt.cm.tab20.colors
+
+    for r, route in enumerate(solution):
+
+        colour = colours[r % len(colours)]
+
+        # Build full route including depot
+        full_route = [0] + route + [0]
+
+        for i in range(len(full_route) - 1):
+            a = full_route[i]
+            b = full_route[i + 1]
+
+            x = [coords[a][0], coords[b][0]]
+            y = [coords[a][1], coords[b][1]]
+
+            plt.plot(x, y, color=colour, linewidth=2)
+
+    plt.title("CVRP Solution (Simulated Annealing")
+    plt.xlabel("X")
+    plt.ylabel("Y")
+    plt.grid(True)
+    plt.axis("equal")
+    plt.legend()
+    plt.show()
+    
+

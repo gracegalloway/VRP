@@ -1,0 +1,304 @@
+# %%
+import random
+import math
+import copy
+
+# %%
+
+# Problem Data
+
+# Coordinates (Depot is node 0)
+coords = [
+    (30, 40),   # Depot
+    (37,52),
+     (49,49),
+     (52,64),
+     (31,62),
+     (52,33),
+     (42,41),
+     (52,41),
+     (57,58),
+     (62,42),
+     (42, 57),
+     (27,68),
+     (43,67),
+     (58,48),
+     (58,27),
+     (37,69)
+]
+
+demands  = [0, 19, 30, 16, 23, 11, 31, 15, 28, 8, 8,  7, 14,  6, 19, 11]
+
+vehicle_capacity = 35
+
+# %%
+
+# Distance Matrix
+
+
+def euclidean(a, b):
+    return math.hypot(a[0]-b[0], a[1]-b[1])
+
+n = len(coords)
+
+distance = [
+    [euclidean(coords[i], coords[j]) for j in range(n)]
+    for i in range(n)
+]
+
+
+# %%
+# Route Utilities
+
+
+def route_load(route):
+    return sum(demands[i] for i in route)
+
+
+def route_cost(route):
+    if len(route) == 0:
+        return 0
+
+    cost = distance[0][route[0]]
+
+    for i in range(len(route)-1):
+        cost += distance[route[i]][route[i+1]]
+
+    cost += distance[route[-1]][0]
+
+    return cost
+
+
+def total_cost(solution):
+    return sum(route_cost(r) for r in solution)
+
+
+# %%
+
+def initial_solution():
+    customers = list(range(1, n))
+    random.shuffle(customers)
+
+    solution = []
+
+    current_route = []
+    load = 0
+
+    for customer in customers:
+
+        if load + demands[customer] <= vehicle_capacity:
+            current_route.append(customer)
+            load += demands[customer]
+        else:
+            solution.append(current_route)
+            current_route = [customer]
+            load = demands[customer]
+
+    if current_route:
+        solution.append(current_route)
+    
+    print(solution)
+
+    return solution
+
+# %%
+# Neighbor Operators
+
+def relocate(solution):
+
+    sol = copy.deepcopy(solution)
+
+    if len(sol) == 0:
+        return sol
+
+    r1 = random.randrange(len(sol))
+
+    if len(sol[r1]) == 0:
+        return sol
+
+    c_index = random.randrange(len(sol[r1]))
+    customer = sol[r1].pop(c_index)
+
+    if len(sol[r1]) == 0:
+        sol.pop(r1)
+
+    if len(sol) == 0:
+        sol.append([customer])
+        return sol
+
+    r2 = random.randrange(len(sol))
+
+    if route_load(sol[r2]) + demands[customer] <= vehicle_capacity:
+        pos = random.randrange(len(sol[r2])+1)
+        sol[r2].insert(pos, customer)
+    else:
+        sol.append([customer])
+
+    return sol
+
+# %%
+def swap(solution):
+
+    sol = copy.deepcopy(solution)
+
+    if len(sol) < 2:
+        return sol
+
+    r1, r2 = random.sample(range(len(sol)), 2)
+
+    if len(sol[r1]) == 0 or len(sol[r2]) == 0:
+        return sol
+
+    i = random.randrange(len(sol[r1]))
+    j = random.randrange(len(sol[r2]))
+
+    a = sol[r1][i]
+    b = sol[r2][j]
+
+    load1 = route_load(sol[r1]) - demands[a] + demands[b]
+    load2 = route_load(sol[r2]) - demands[b] + demands[a]
+
+    if load1 <= vehicle_capacity and load2 <= vehicle_capacity:
+        sol[r1][i], sol[r2][j] = sol[r2][j], sol[r1][i]
+
+    return sol
+
+# %%
+def two_opt(solution):
+
+    sol = copy.deepcopy(solution)
+
+    routes = [r for r in sol if len(r) >= 4]
+
+    if not routes:
+        return sol
+
+    r = random.choice(routes)
+    idx = sol.index(r)
+
+    i, j = sorted(random.sample(range(len(r)), 2))
+
+    if j-i < 2:
+        return sol
+
+    r[i:j] = reversed(r[i:j])
+
+    sol[idx] = r
+
+    return sol
+
+# %%
+def random_neighbor(solution):
+
+    move = random.choice([relocate, swap, two_opt])
+
+    return move(solution)
+
+
+# %%
+# Simulated Annealing
+
+
+def simulated_annealing(
+    initial_temp=1000,
+    cooling_rate=0.995,
+    stopping_temp=1e-3,
+    iterations_per_temp=100
+):
+
+    current = initial_solution()
+    current_cost = total_cost(current)
+
+    best = copy.deepcopy(current)
+    best_cost = current_cost
+
+    T = initial_temp
+
+    while T > stopping_temp:
+
+        for _ in range(iterations_per_temp):
+
+            candidate = random_neighbor(current)
+            candidate_cost = total_cost(candidate)
+
+            delta = candidate_cost - current_cost
+
+            if delta < 0:
+
+                current = candidate
+                current_cost = candidate_cost
+
+            else:
+
+                probability = math.exp(-delta / T)
+
+                if random.random() < probability:
+                    current = candidate
+                    current_cost = candidate_cost
+
+            if current_cost < best_cost:
+                best = copy.deepcopy(current)
+                best_cost = current_cost
+
+        T *= cooling_rate
+
+    return best, best_cost
+
+# %%
+# Run
+
+best_solution, best_cost = simulated_annealing()
+
+print("Best Cost:", round(best_cost, 2))
+
+for i, route in enumerate(best_solution):
+    print(f"Vehicle {i+1}: 0 -> {' -> '.join(map(str, route))} -> 0")
+    
+import matplotlib.pyplot as plt
+# %%
+def plot_solution(coords, solution):
+    plt.figure(figsize=(8, 8))
+
+    # Plot depot
+    depot_x, depot_y = coords[0]
+    plt.scatter(depot_x, depot_y, c='red', s=150, marker='s', label='Depot')
+
+    # Plot customers
+    for i in range(1, len(coords)):
+        x, y = coords[i]
+        plt.scatter(x, y, c='blue', s=60)
+        plt.text(x + 0.5, y + 0.5, str(i), fontsize=9)
+
+    # Different colour for each route
+    colours = plt.cm.tab20.colors
+
+    for r, route in enumerate(solution):
+
+        colour = colours[r % len(colours)]
+
+        # Build full route including depot
+        full_route = [0] + route + [0]
+
+        for i in range(len(full_route) - 1):
+            a = full_route[i]
+            b = full_route[i + 1]
+
+            x = [coords[a][0], coords[b][0]]
+            y = [coords[a][1], coords[b][1]]
+
+            plt.plot(x, y, color=colour, linewidth=2)
+
+    plt.title("CVRP Solution (Simulated Annealing)")
+    plt.xlabel("X")
+    plt.ylabel("Y")
+    plt.grid(True)
+    plt.axis("equal")
+    plt.legend()
+    plt.show()
+    
+# %%
+best_solution, best_cost = simulated_annealing()
+
+print(best_cost)
+
+plot_solution(coords, best_solution)

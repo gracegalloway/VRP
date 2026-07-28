@@ -1,0 +1,146 @@
+import numpy as np
+import random
+import time
+import matplotlib.pyplot as plt
+import math
+import copy
+from Functions.functions import *
+
+# create customer distances
+def distance(i, j):
+    x1, y1 = coordinates[i]
+    x2, y2 = coordinates[j]
+    return math.hypot(x2 - x1, y2 - y1)
+
+n = len(coordinates)
+
+# Build distance matrix
+distance_matrix = np.zeros((n,n))
+
+for i in range(n):
+    for j in range(n):
+        distance_matrix[i,j] = distance(i,j)
+
+
+def route_load(route):
+    return sum(demands[i] for i in route)
+
+
+def route_cost(route):
+    if len(route) == 0:
+        return 0
+
+    cost = distance[0][route[0]]
+
+    for i in range(len(route)-1):
+        cost += distance[route[i]][route[i+1]]
+
+    cost += distance[route[-1]][0]
+
+    return cost
+
+# generate initial sol via nearest neighbour starting from random customer
+def initial_solution():
+    customers = list(range(1, n))
+    random.shuffle(customers)
+
+    solution = []
+
+    current_route = []
+    load = 0
+
+    for customer in customers:
+
+        if load + demands[customer] <= vehicle_capacity:
+            current_route.append(customer)
+            load += demands[customer]
+        else:
+            solution.append(current_route)
+            current_route = [customer]
+            load = demands[customer]
+
+    if current_route:
+        solution.append(current_route)
+    
+    print(solution)
+
+    return solution
+
+# inter-route operations
+## relocate customer into different route
+def inter_relocate(solution):
+
+    # copies sol so og untouched
+    sol = copy.deepcopy(solution)
+
+    if len(sol) == 0:
+        return sol
+
+    # pick random route 
+    r1 = random.randrange(len(sol))
+
+    if len(sol[r1]) == 0:
+        return sol
+
+    c_index = random.randrange(len(sol[r1]))
+    # pick random customer in route and remove from route
+    customer = sol[r1].pop(c_index)
+
+    # if route empty delete
+    if len(sol[r1]) == 0:
+        sol.pop(r1)
+
+    if len(sol) == 0:
+        sol.append([customer])
+        return sol
+
+    # pick another random route
+    r2 = random.randrange(len(sol))
+
+    # if feasible to insert customer in route do so else get new vechile
+    if route_load(sol[r2]) + demands[customer] <= vehicle_capacity:
+        pos = random.randrange(len(sol[r2])+1)
+        sol[r2].insert(pos, customer)
+    else:
+        sol.append([customer])
+
+    return sol
+
+## swap customers between routes
+def inter_swap(solution):
+
+    sol = copy.deepcopy(solution)
+
+    # check at least 2 routes so swap possible
+    if len(sol) < 2:
+        return sol
+
+    # select routes randomly
+    r1, r2 = random.sample(range(len(sol)), 2)
+
+    # check routes not empty
+    if len(sol[r1]) == 0 or len(sol[r2]) == 0:
+        return sol
+
+    # choose random customers
+    i = random.randrange(len(sol[r1]))
+    j = random.randrange(len(sol[r2]))
+
+    # store random customers
+    a = sol[r1][i]
+    b = sol[r2][j]
+
+    # calculate new loads of routes
+    load1 = route_load(sol[r1]) - demands[a] + demands[b]
+    load2 = route_load(sol[r2]) - demands[b] + demands[a]
+
+    # check swap feasible
+    if load1 <= vehicle_capacity and load2 <= vehicle_capacity:
+        sol[r1][i], sol[r2][j] = sol[r2][j], sol[r1][i]
+
+    return sol
+
+# intra-route operations
+## relocate customer in its own route
+def intra_relocate(solution):
+    
