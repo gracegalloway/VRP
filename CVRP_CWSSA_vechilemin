@@ -5,13 +5,12 @@ import matplotlib.pyplot as plt
 import math
 import copy
 import vrplib
-from Functions.functions import *
 
 random.seed(10)
 
-OPTIMAL_COST = 735
+OPTIMAL_COST = 955
 
-instance = vrplib.read_instance("Instances/E-n76-k8.vrp")
+instance = vrplib.read_instance("Instances/B-n35-k5.vrp")
 
 
 coordinates = {
@@ -68,53 +67,92 @@ def objective(solution):
     extra = max(0, len(solution) - min_K)
     return total_cost(solution) + vehicle_penalty * extra
 
-# generate initial sol via nearest neighbour starting from random customer
-def initial_solution():
-    customers = list(range(1, n))
-    random.shuffle(customers)
+# generate initial sol via parallel clarke and wright savings method
+def CW_initial_solution():
 
-    solution = []
+    # -----------------------------
+    # Initial routes
+    # -----------------------------
+    routes = {i: [i] for i in range(1, n)}
+    loads = {i: demands[i] for i in range(1, n)}
+    customer_route = {i: i for i in range(1, n)}
 
-    current_route = []
-    load = 0
+    # -----------------------------
+    # Compute savings
+    # -----------------------------
+    savings = []
+    for i in range(1, n):
+        for j in range(i + 1, n):
+            s = (
+                distance[0][i]
+                + distance[0][j]
+                - distance[i][j]
+            )
+            savings.append((s, i, j))
+    savings.sort(reverse=True)
 
-    for customer in customers:
+    # -----------------------------
+    # Merge routes
+    # -----------------------------
+    for saving, i, j in savings:
+        if saving <= 0:
+            break  # no point merging routes that don't save distance
 
-        if load + demands[customer] <= vehicle_capacity:
-            current_route.append(customer)
-            load += demands[customer]
-        else:
-            solution.append(current_route)
-            current_route = [customer]
-            load = demands[customer]
+        ri = customer_route[i]
+        rj = customer_route[j]
+        if ri == rj:
+            continue
 
-    if current_route:
-        solution.append(current_route)
-    
+        route_i = routes[ri]
+        route_j = routes[rj]
 
-    return solution
+        if loads[ri] + loads[rj] > vehicle_capacity:
+            continue
+
+        merged = None
+        # i at end of route_i, j at start of route_j
+        if route_i[-1] == i and route_j[0] == j:
+            merged = route_i + route_j
+        # j at end of route_j, i at start of route_i
+        elif route_j[-1] == j and route_i[0] == i:
+            merged = route_j + route_i
+        # both start points
+        elif route_i[0] == i and route_j[0] == j:
+            merged = list(reversed(route_i)) + route_j
+        # both end points
+        elif route_i[-1] == i and route_j[-1] == j:
+            merged = route_i + list(reversed(route_j))
+
+        if merged is None:
+            continue
+
+        # -----------------------------
+        # Perform merge
+        # -----------------------------
+        routes[ri] = merged
+        loads[ri] += loads[rj]
+        for customer in merged:
+            customer_route[customer] = ri
+        del routes[rj]
+        del loads[rj]
+
+    return list(routes.values())
 
 # inter-route operations
 ## relocate customer into different route
 def inter_relocate(solution):
-
-    # copies sol so og untouched
     sol = copy.deepcopy(solution)
 
     if len(sol) == 0:
         return sol
 
-    # pick random route 
     r1 = random.randrange(len(sol))
-
     if len(sol[r1]) == 0:
         return sol
 
     c_index = random.randrange(len(sol[r1]))
-    # pick random customer in route and remove from route
     customer = sol[r1].pop(c_index)
 
-    # if route empty delete
     if len(sol[r1]) == 0:
         sol.pop(r1)
 
@@ -122,10 +160,8 @@ def inter_relocate(solution):
         sol.append([customer])
         return sol
 
-    # pick another random route
     r2 = random.randrange(len(sol))
 
-    # if feasible to insert customer in route do so else get new vechile
     if route_load(sol[r2]) + demands[customer] <= vehicle_capacity:
         pos = random.randrange(len(sol[r2])+1)
         sol[r2].insert(pos, customer)
@@ -305,14 +341,15 @@ def random_neighbour(solution, weights):
 
 def simulated_annealing(
     weights,
-    initial_temp=1000,
+    initial_solution_func,
+    initial_temp=350,
     cooling_rate=0.995,
     stopping_temp=1e-3,
     iterations_per_temp=100
 ):
 
     # generate initial solution
-    current = initial_solution()
+    current = initial_solution_func()
     current_cost = objective(current)
 
     # create copy of initial solution
@@ -367,6 +404,7 @@ weights = [5,5,5,1,1,1]
 
 results = {}
 
+
 costs = []
 runtimes = []
 
@@ -374,7 +412,7 @@ for run in range(10):
 
     start = time.time()
 
-    best_solution, best_cost = simulated_annealing(
+    best_solution, best_cost = CW_simulated_annealing(
         weights
         )
 
@@ -391,6 +429,7 @@ results[f"x"] = {
     "gap": ((np.mean(costs) - OPTIMAL_COST) / OPTIMAL_COST) * 100
     }
 
+
 for name, result in results.items():
 
     print("\nSwitch temperature:", name)
@@ -400,3 +439,4 @@ for name, result in results.items():
     print("Mean runtime:", round(result["mean_runtime"], 3), "seconds")
     print("Gap from optimum:", round(result["gap"], 2), "%")
     
+

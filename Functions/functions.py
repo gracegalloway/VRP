@@ -382,20 +382,6 @@ def nearest_neighbour_clusters(coordinates, demands, vehicle_capacity):
 
 
 
-def total_cost(routes, distance_matrix):
-
-    total_cost = 0
-
-    for route, load in routes:
-
-        for i in range(len(route)-1):
-
-            total_cost += distance_matrix[
-                route[i],
-                route[i+1]
-            ]
-
-    return total_cost
 
 
 def plot_solution(coords, solution):
