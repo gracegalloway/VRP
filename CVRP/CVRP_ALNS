@@ -11,9 +11,9 @@ import numpy as np
 
 random.seed(20)
 
-OPTIMAL_COST = 955
+OPTIMAL_COST = 661
 
-instance = vrplib.read_instance("Instances/B-n35-k5.vrp")
+instance = vrplib.read_instance("Instances/A-n33-k5.vrp")
 
 
 coordinates = {
@@ -282,6 +282,85 @@ def greedy_insert(solution, removed):
 
     return sol
 
+# regret insert (reinsert customers based on cost diff between best and second best position)
+#regret insertion - prioritises customers with large regret
+
+def regret_insert(solution, removed):
+
+    sol = copy.deepcopy(solution)
+
+    while removed:
+
+        best_customer = None
+        best_route = None
+        best_pos = None
+        best_regret = -float("inf")
+
+        # evaluate each customer still to be inserted
+        for customer in removed:
+
+            insertions = []
+
+            # check all feasible insertions
+            for r, route in enumerate(sol):
+
+                if route_load(route) + demands[customer] > vehicle_capacity:
+                    continue
+
+                for pos in range(len(route) + 1):
+
+                    new_route = route[:]
+                    new_route.insert(pos, customer)
+
+                    increase = (
+                        route_cost(new_route)
+                        - route_cost(route)
+                    )
+
+                    insertions.append(
+                        (increase, r, pos)
+                    )
+
+            # if no feasible insertion, create a new route
+            if len(insertions) == 0:
+                continue
+
+            # sort insertion positions by cost
+            insertions.sort(key=lambda x: x[0])
+
+            # best and second-best insertion
+            best = insertions[0]
+            second_best = insertions[1] if len(insertions) > 1 else None
+
+            if second_best is None:
+                regret = 0
+            else:
+                regret = second_best[0] - best[0]
+
+            # customer with largest regret is inserted first
+            if regret > best_regret:
+
+                best_regret = regret
+                best_customer = customer
+                best_route = best[1]
+                best_pos = best[2]
+
+        # if no feasible insertion into existing routes
+        if best_customer is None:
+
+            customer = removed.pop(0)
+            sol.append([customer])
+
+        else:
+
+            sol[best_route].insert(
+                best_pos,
+                best_customer
+            )
+
+            removed.remove(best_customer)
+
+    return sol
 ##############################################################################
 # adaptive large neighbourhood search
 ##############################################################################
@@ -295,11 +374,12 @@ destroy_ops = [
 
 repair_ops = [
     random_insert,
-    greedy_insert
+    greedy_insert,
+    regret_insert
 ]
 
 destroy_weights = [1.0, 1.0]
-repair_weights = [1.0, 1.0]
+repair_weights = [1.0, 1.0, 1.0]
 
 
 def choose(weights):
@@ -323,7 +403,7 @@ def choose(weights):
 def alns(remove_fraction,
          iterations=3000,
          temperature=1000,
-         cooling=0.9995):
+         cooling=0.995):
 
     current = CW_initial_solution()
 
@@ -399,10 +479,10 @@ def alns(remove_fraction,
     return best, best_cost
 
 
-fractions = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+fractions = [0.2, 0.25, 0.3, 0.35, 0.4]
 runs = 10
 
-print(f"{'Fraction':<10} {'Mean Cost':<12} {'Best Cost':<12} {'Std Dev':<12} {'Runtime':<12} {'Gap (%)':<10}")
+print(f"{'Fraction':<12} {'Mean Cost':<12} {'Best Cost':<12} {'Std Dev':<12} {'Runtime':<12} {'Gap (%)':<10}")
 
 for fraction in fractions:
 
@@ -422,7 +502,7 @@ for fraction in fractions:
         best_solution, best_objective = alns(
             remove_fraction=fraction
         )
-
+        
         runtime = time.time() - start
 
         # compare actual routing distance to CVRPLIB optimum
@@ -450,7 +530,7 @@ for fraction in fractions:
 
 
     print(
-        f"{fraction:<10.1f}"
+        f"{fraction:<12.2f}"
         f"{mean_cost:<12.2f}"
         f"{best_cost:<12.2f}"
         f"{std:<12.2f}"

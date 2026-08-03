@@ -6,11 +6,11 @@ import math
 import copy
 import vrplib
 
-random.seed(10)
+random.seed(20)
 
-OPTIMAL_COST = 955
+OPTIMAL_COST = 735
 
-instance = vrplib.read_instance("Instances/B-n35-k5.vrp")
+instance = vrplib.read_instance("Instances/E-n76-k8.vrp")
 
 
 coordinates = {
@@ -70,16 +70,12 @@ def objective(solution):
 # generate initial sol via parallel clarke and wright savings method
 def CW_initial_solution():
 
-    # -----------------------------
-    # Initial routes
-    # -----------------------------
+    # initial routes
     routes = {i: [i] for i in range(1, n)}
     loads = {i: demands[i] for i in range(1, n)}
     customer_route = {i: i for i in range(1, n)}
 
-    # -----------------------------
-    # Compute savings
-    # -----------------------------
+    # compute savings
     savings = []
     for i in range(1, n):
         for j in range(i + 1, n):
@@ -337,6 +333,10 @@ def random_neighbour(solution, weights):
 
     return move(solution)
 
+
+ops =[inter_relocate, inter_swap, inter_2_opt, 
+      intra_relocate, intra_swap, intra_2_opt]
+
 # simulated annealing
 
 def simulated_annealing(
@@ -400,7 +400,124 @@ def simulated_annealing(
 
     return best, best_cost
 
-weights = [5,5,5,1,1,1]
+# introduce rewards to SA
+def choose(weights):
+
+    total = sum(weights)
+
+    r = random.random() * total
+
+    cumulative = 0
+
+    for i, w in enumerate(weights):
+
+        cumulative += w
+
+        if cumulative >= r:
+            return i
+
+    return len(weights)-1
+
+def rewards_simulated_annealing(
+    weights,
+    initial_solution_func,
+    initial_temp=700,
+    cooling_rate=0.995,
+    stopping_temp=1e-3,
+    iterations_per_temp=100
+):
+
+    # generate initial solution
+    current = initial_solution_func()
+    current_cost = objective(current)
+
+    # store best solution found
+    best = copy.deepcopy(current)
+    best_objective = current_cost
+    best_cost = total_cost(current)
+
+    # initial temperature
+    T = initial_temp
+
+    while T > stopping_temp:
+
+        for _ in range(iterations_per_temp):
+
+            # choose operator
+            op = choose(weights)
+
+            # generate neighbour
+            candidate = ops[op](current)
+            candidate_cost = objective(candidate)
+
+            # store old cost for reward calculation
+            old_cost = current_cost
+
+            delta = candidate_cost - old_cost
+
+            accepted = False
+
+            # accept improving move
+            if delta < 0:
+
+                current = candidate
+                current_cost = candidate_cost
+                accepted = True
+
+            # accept worse move with probability
+            else:
+
+                probability = math.exp(-delta / T)
+
+                if random.random() < probability:
+
+                    current = candidate
+                    current_cost = candidate_cost
+                    accepted = True
+
+
+            # check if global best found
+            new_best = False
+
+            if current_cost < best_objective:
+
+                best = copy.deepcopy(current)
+                best_objective = current_cost
+                best_cost = total_cost(current)
+
+                new_best = True
+
+
+            # Reward operator
+
+            if new_best:
+                # found global best
+                weights[op] += 20
+
+            elif accepted and delta < 0:
+                # improved current solution
+                weights[op] += 5
+
+            elif accepted:
+                # accepted worse solution (exploration)
+                weights[op] += 1
+
+            else:
+                # rejected move
+                weights[op] += 0
+
+
+            # slow forgetting
+            weights[op] *= 0.9995
+
+
+        # cool temperature
+        T *= cooling_rate
+
+
+    return best, best_cost
+
+
 
 results = {}
 
@@ -410,11 +527,15 @@ runtimes = []
 
 for run in range(10):
 
+    weights=[1,1,1,1,1,1]
     start = time.time()
 
-    best_solution, best_cost = CW_simulated_annealing(
-        weights
+    best_solution, best_cost = rewards_simulated_annealing(
+        weights,
+        CW_initial_solution
         )
+
+    print(weights)
 
     end = time.time()
 
