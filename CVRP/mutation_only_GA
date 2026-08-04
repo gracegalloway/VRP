@@ -1,0 +1,326 @@
+import random
+import copy
+import math
+
+
+# Coordinates (Depot is node 0)
+coords = [
+    (30, 40),   # Depot
+    (37,52),
+     (49,49),
+     (52,64),
+     (31,62),
+     (52,33),
+     (42,41),
+     (52,41),
+     (57,58),
+     (62,42),
+     (42, 57),
+     (27,68),
+     (43,67),
+     (58,48),
+     (58,27),
+     (37,69)
+]
+
+demands  = [0, 19, 30, 16, 23, 11, 31, 15, 28, 8, 8,  7, 14,  6, 19, 11]
+
+vehicle_capacity = 35
+
+
+# -----------------------------
+# Distance
+# -----------------------------
+
+def euclidean(a, b):
+    return math.hypot(a[0]-b[0], a[1]-b[1])
+
+# coords, demands and capacity should already exist
+
+n = len(coords)
+
+distance = [
+    [euclidean(coords[i], coords[j]) for j in range(n)]
+    for i in range(n)
+]
+
+# -----------------------------
+# Cost Functions
+# -----------------------------
+
+def route_cost(route):
+
+    if len(route) == 0:
+        return 0
+
+    cost = distance[0][route[0]]
+
+    for i in range(len(route)-1):
+        cost += distance[route[i]][route[i+1]]
+
+    cost += distance[route[-1]][0]
+
+    return cost
+
+
+def total_cost(solution):
+    return round(sum(route_cost(r) for r in solution))
+
+
+def route_load(route):
+    return sum(demands[c] for c in route)
+
+# -----------------------------
+# Initial Solution
+# -----------------------------
+
+def random_solution():
+
+    customers = list(range(1, n))
+    random.shuffle(customers)
+
+    routes = []
+    current = []
+    load = 0
+
+    for c in customers:
+
+        if load + demands[c] <= vehicle_capacity:
+            current.append(c)
+            load += demands[c]
+
+        else:
+            routes.append(current)
+            current = [c]
+            load = demands[c]
+
+    if current:
+        routes.append(current)
+
+    return routes
+
+# -----------------------------
+# Mutation Operators
+# -----------------------------
+
+def mutate(solution):
+
+    sol = copy.deepcopy(solution)
+
+    move = random.choice(["swap", "relocate", "reverse"])
+
+    # ---------------- swap ----------------
+    if move == "swap":
+
+        if len(sol) < 2:
+            return sol
+
+        r1, r2 = random.sample(range(len(sol)), 2)
+
+        if not sol[r1] or not sol[r2]:
+            return sol
+
+        i = random.randrange(len(sol[r1]))
+        j = random.randrange(len(sol[r2]))
+
+        a = sol[r1][i]
+        b = sol[r2][j]
+
+        load1 = route_load(sol[r1]) - demands[a] + demands[b]
+        load2 = route_load(sol[r2]) - demands[b] + demands[a]
+
+        if load1 <= vehicle_capacity and load2 <= vehicle_capacity:
+            sol[r1][i], sol[r2][j] = b, a
+
+    # ---------------- relocate ----------------
+    elif move == "relocate":
+
+        r1 = random.randrange(len(sol))
+
+        if not sol[r1]:
+            return sol
+
+        idx = random.randrange(len(sol[r1]))
+        customer = sol[r1].pop(idx)
+
+        if len(sol[r1]) == 0:
+            sol.pop(r1)
+
+        r2 = random.randrange(len(sol))
+
+        if route_load(sol[r2]) + demands[customer] <= vehicle_capacity:
+
+            pos = random.randrange(len(sol[r2])+1)
+            sol[r2].insert(pos, customer)
+
+        else:
+            sol.append([customer])
+
+    # ---------------- reverse ----------------
+    else:
+
+        routes = [r for r in sol if len(r) >= 4]
+
+        if routes:
+
+            route = random.choice(routes)
+            idx = sol.index(route)
+
+            i, j = sorted(random.sample(range(len(route)), 2))
+
+            if j-i > 1:
+                route[i:j] = reversed(route[i:j])
+
+            sol[idx] = route
+
+    return sol
+
+# -----------------------------
+# Tournament Selection
+# -----------------------------
+
+def tournament(population, k=3):
+
+    competitors = random.sample(population, k)
+
+    competitors.sort(key=lambda x: x[1])
+
+    return competitors[0][0]
+
+# -----------------------------
+# Mutation-only GA
+# -----------------------------
+
+def genetic_algorithm(
+        pop_size=50,
+        generations=300,
+        elite_size=5,
+        mutation_rate=0.9):
+
+    population = []
+
+    for _ in range(pop_size):
+
+        s = random_solution()
+        population.append((s, total_cost(s)))
+
+    best_solution = None
+    best_cost = float("inf")
+
+    for generation in range(generations):
+
+        population.sort(key=lambda x: x[1])
+
+        if population[0][1] < best_cost:
+            best_solution = copy.deepcopy(population[0][0])
+            best_cost = population[0][1]
+
+        new_population = []
+
+        # Elitism
+        for i in range(elite_size):
+            new_population.append(copy.deepcopy(population[i]))
+
+        # Fill remaining population
+        while len(new_population) < pop_size:
+
+            parent = tournament(population)
+
+            child = copy.deepcopy(parent)
+
+            if random.random() < mutation_rate:
+                child = mutate(child)
+
+            new_population.append((child, total_cost(child)))
+
+        population = new_population
+
+        print(f"Generation {generation:3d} Best = {best_cost:.2f}")
+
+    return best_solution, best_cost
+
+# -----------------------------
+# Run
+# -----------------------------
+
+best, cost = genetic_algorithm()
+
+print("\nBest Cost GA:", cost)
+
+for i, route in enumerate(best):
+    print(f"Vehicle {i+1}: 0 -> {' -> '.join(map(str, route))} -> 0")
+
+
+import matplotlib.pyplot as plt
+
+def plot_solution(coords, solution):
+    """
+    Plot a CVRP solution.
+
+    Parameters
+    ----------
+    coords : list of (x, y)
+        Coordinates of depot and customers.
+        coords[0] must be the depot.
+
+    solution : list of lists
+        Example:
+        [
+            [1, 5, 3],
+            [2, 7],
+            [4, 6, 8]
+        ]
+    """
+
+    plt.figure(figsize=(8, 8))
+
+    # Plot depot
+    depot_x, depot_y = coords[0]
+    plt.scatter(depot_x, depot_y,
+                color='red',
+                s=200,
+                marker='s',
+                label='Depot')
+
+    # Plot customers
+    for i in range(1, len(coords)):
+        x, y = coords[i]
+        plt.scatter(x, y, color='dodgerblue', s=60)
+        plt.text(x + 0.5, y + 0.5, str(i), fontsize=10)
+
+    colours = plt.cm.tab20.colors
+
+    # Draw each route
+    for r, route in enumerate(solution):
+
+        colour = colours[r % len(colours)]
+
+        full_route = [0] + route + [0]
+
+        for i in range(len(full_route) - 1):
+
+            a = full_route[i]
+            b = full_route[i + 1]
+
+            plt.plot(
+                [coords[a][0], coords[b][0]],
+                [coords[a][1], coords[b][1]],
+                color=colour,
+                linewidth=2,
+                label=f"Vehicle {r+1}" if i == 0 else ""
+            )
+
+    plt.title("CVRP Solution (Evolutionary Algorithm)")
+    plt.xlabel("X")
+    plt.ylabel("Y")
+    plt.axis("equal")
+    plt.grid(True)
+    plt.legend()
+    plt.show()
+    
+    
+best_solution, best_cost = genetic_algorithm()
+
+print(f"Best Cost: {best_cost:.2f}")
+
+plot_solution(coords, best_solution)

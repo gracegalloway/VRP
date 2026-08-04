@@ -8,7 +8,7 @@ import copy
 random.seed(20)
 
 
-OPTIMAL_COST = 827.3 
+OPTIMAL_COST = 827.3
 
 
 instance = "Instances/C101.txt"
@@ -72,12 +72,10 @@ n = len(coordinates)
 
 def euclidean(a,b):
 
-    return round(
-        math.hypot(
+    return math.hypot(
             a[0]-b[0],
             a[1]-b[1]
         )
-    )
 
 
 distance = [
@@ -97,7 +95,7 @@ def route_load(route):
     return sum(demands[i] for i in route)
 
 
-
+# hard time windows
 def feasible_route(route):
 
     if route_load(route) > vehicle_capacity:
@@ -113,14 +111,21 @@ def feasible_route(route):
         if current_time > due_time[customer]:
             return False
 
-
         current_time = max(
             current_time,
             ready_time[customer]
         )
 
         current_time += service_time[customer]
+
         previous = customer
+
+
+    # return to depot
+    current_time += distance[previous][0]
+
+    if current_time > due_time[0]:
+        return False
 
 
     return True
@@ -131,7 +136,6 @@ def route_cost(route):
 
     if len(route)==0:
         return 0
-
 
     cost = 0
     current_time = 0
@@ -145,42 +149,30 @@ def route_cost(route):
 
         current_time += travel
 
-
         if current_time < ready_time[customer]:
 
             current_time = ready_time[customer]
 
-
-        # soft penalty
-        if current_time > due_time[customer]:
-
-            cost += 1000*(current_time-due_time[customer])
-
-
         current_time += service_time[customer]
 
         previous = customer
+
     cost += distance[previous][0]
     return cost
 
 
 def total_cost(solution):
 
-    return sum(route_cost(r) for r in solution)
+    return round(sum(route_cost(r) for r in solution),1)
 
 # vehicle minimisation objective
-min_K = math.ceil(sum(demands.values()) / vehicle_capacity)
-
-vehicle_penalty = 500
-
+VEHICLE_PENALTY = 10000
 
 def objective(solution):
 
-    vehicles = len(solution)
-
     return (
-        total_cost(solution)
-        + vehicle_penalty * max(0, vehicles-min_K)
+        VEHICLE_PENALTY * len(solution)
+        + total_cost(solution)
     )
 
 
@@ -710,7 +702,6 @@ def rewards_simulated_annealing(
     return best,best_cost
 
 
-
 # run
 results = {}
 
@@ -718,21 +709,35 @@ results = {}
 costs = []
 runtimes = []
 
+costs = []
+vehicle_counts = []
+runtimes = []
+
 for run in range(10):
 
-    weights=[5,5,5,1,1,1]
+    weights = [1,1,1, 1, 1, 1]
+
     start = time.time()
 
-    best_solution, best_cost = simulated_annealing(
+    best_solution, best_objective = rewards_simulated_annealing(
         weights,
         CW_initial_solution
-        )
-
-    print(weights)
+    )
 
     end = time.time()
 
-    costs.append(best_cost)
+    distance_cost = total_cost(best_solution)
+    vehicles = len(best_solution)
+
+    print(
+        f"Run {run+1}: "
+        f"vehicles={vehicles}, "
+        f"distance={distance_cost:.2f}, "
+        f"objective={best_objective:.2f}"
+    )
+
+    costs.append(distance_cost)
+    vehicle_counts.append(vehicles)
     runtimes.append(end - start)
 
 results[f"x"] = {
