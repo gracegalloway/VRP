@@ -72,10 +72,10 @@ n = len(coordinates)
 
 def euclidean(a,b):
 
-    return math.hypot(
+    return round(math.hypot(
             a[0]-b[0],
             a[1]-b[1]
-        )
+        ),1)
 
 
 distance = [
@@ -163,7 +163,7 @@ def route_cost(route):
 
 def total_cost(solution):
 
-    return round(sum(route_cost(r) for r in solution),1)
+    return sum(route_cost(r) for r in solution)
 
 # vehicle minimisation objective
 VEHICLE_PENALTY = 10000
@@ -715,11 +715,11 @@ runtimes = []
 
 for run in range(10):
 
-    weights = [1,1,1, 1, 1, 1]
+    weights = [5,5,5, 1, 1, 1]
 
     start = time.time()
 
-    best_solution, best_objective = rewards_simulated_annealing(
+    best_solution, best_objective = simulated_annealing(
         weights,
         CW_initial_solution
     )

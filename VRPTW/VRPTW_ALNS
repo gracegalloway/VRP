@@ -1,0 +1,1122 @@
+import math
+import random
+import copy
+import time
+import vrplib
+
+#############################################################################
+# INSTANCE SET UP
+#############################################################################
+
+random.seed(20)
+
+OPTIMAL_COST = 783.5  
+
+filename = "Instances/RC204.txt"
+
+
+#############################################################################
+# READ SOLOMON INSTANCE
+#############################################################################
+
+with open(filename, "r") as f:
+    lines = [line.strip() for line in f if line.strip()]
+
+
+# Find vehicle capacity
+capacity_index = None
+
+for i, line in enumerate(lines):
+    if "CAPACITY" in line.upper():
+        capacity_index = i
+        break
+
+vehicle_capacity = int(lines[capacity_index + 1].split()[1])
+
+
+# Find customer data
+data_start = None
+
+for i, line in enumerate(lines):
+    if line.upper().startswith("CUST NO."):
+        data_start = i + 1
+        break
+
+
+coordinates = {}
+demands = {}
+ready_time = {}
+due_time = {}
+service_time = {}
+
+for line in lines[data_start:]:
+
+    parts = line.split()
+
+    if len(parts) < 7:
+        continue
+
+    try:
+        customer = int(parts[0])
+        x = float(parts[1])
+        y = float(parts[2])
+        demand = int(parts[3])
+        ready = float(parts[4])
+        due = float(parts[5])
+        service = float(parts[6])
+    except ValueError:
+        continue
+
+    coordinates[customer] = (x, y)
+    demands[customer] = demand
+    ready_time[customer] = ready
+    due_time[customer] = due
+    service_time[customer] = service
+
+
+n = len(coordinates)
+
+
+#############################################################################
+# DISTANCE
+#############################################################################
+
+def euclidean(a, b):
+    return round(math.hypot(
+        a[0] - b[0],
+        a[1] - b[1]
+    ),1)
+
+
+distance = [
+    [
+        euclidean(coordinates[i], coordinates[j])
+        for j in range(n)
+    ]
+    for i in range(n)
+]
+
+
+#############################################################################
+# BASIC FUNCTIONS
+#############################################################################
+
+min_K = math.ceil(
+    sum(demands.values()) / vehicle_capacity
+)
+
+
+def route_load(route):
+    return sum(demands[i] for i in route)
+
+
+def route_cost(route):
+
+    if len(route) == 0:
+        return 0
+
+    cost = distance[0][route[0]]
+
+    for i in range(len(route) - 1):
+        cost += distance[route[i]][route[i + 1]]
+
+    cost += distance[route[-1]][0]
+
+    return cost
+
+
+#############################################################################
+# HARD TIME-WINDOW FEASIBILITY
+#############################################################################
+
+def route_feasible(route):
+    """
+    Checks capacity and hard time-window feasibility.
+
+    Vehicle:
+        starts at depot 0
+        visits customers in order
+        may wait if it arrives early
+        must arrive before each customer's due time
+        returns to depot before depot due time
+    """
+
+    if len(route) == 0:
+        return True
+
+    # Capacity
+    if route_load(route) > vehicle_capacity:
+        return False
+
+    # Start at depot
+    current = 0
+    current_time = ready_time[0]
+
+    for customer in route:
+
+        # Travel to customer
+        arrival = (
+            current_time
+            + distance[current][customer]
+        )
+
+        # Waiting is allowed
+        start_service = max(
+            arrival,
+            ready_time[customer]
+        )
+
+        # HARD WINDOW:
+        # must start service before due time
+        if start_service > due_time[customer]:
+            return False
+
+        # Complete service
+        current_time = (
+            start_service
+            + service_time[customer]
+        )
+
+        current = customer
+
+    # Return to depot
+    arrival_depot = (
+        current_time
+        + distance[current][0]
+    )
+
+    # HARD depot window
+    if arrival_depot > due_time[0]:
+        return False
+
+    return True
+
+
+#############################################################################
+# OBJECTIVE
+#############################################################################
+
+vehicle_penalty = 1000
+
+
+def total_cost(solution):
+    return sum(
+        route_cost(route)
+        for route in solution
+    )
+
+
+def objective(solution):
+
+    # This should never happen if all operators enforce hard TWs,
+    # but keep this as a safety check.
+    for route in solution:
+        if not route_feasible(route):
+            return float("inf")
+
+    extra = max(
+        0,
+        len(solution) - min_K
+    )
+
+    return (
+        total_cost(solution)
+        + vehicle_penalty * extra
+    )
+
+
+#############################################################################
+# CLARKE-WRIGHT INITIAL SOLUTION
+#############################################################################
+
+def CW_initial_solution():
+
+    # Start with one customer per route
+    routes = {
+        i: [i]
+        for i in range(1, n)
+    }
+
+    loads = {
+        i: demands[i]
+        for i in range(1, n)
+    }
+
+    customer_route = {
+        i: i
+        for i in range(1, n)
+    }
+
+
+    #########################################################################
+    # SAVINGS
+    #########################################################################
+
+    savings = []
+
+    for i in range(1, n):
+
+        for j in range(i + 1, n):
+
+            saving = (
+                distance[0][i]
+                + distance[0][j]
+                - distance[i][j]
+            )
+
+            savings.append(
+                (saving, i, j)
+            )
+
+    savings.sort(
+        reverse=True
+    )
+
+
+    #########################################################################
+    # MERGE
+    #########################################################################
+
+    for saving, i, j in savings:
+
+        if saving <= 0:
+            break
+
+        ri = customer_route[i]
+        rj = customer_route[j]
+
+        if ri == rj:
+            continue
+
+        route_i = routes[ri]
+        route_j = routes[rj]
+
+        # Capacity
+        if (
+            loads[ri]
+            + loads[rj]
+            > vehicle_capacity
+        ):
+            continue
+
+        merged = None
+
+        # i at end, j at start
+        if (
+            route_i[-1] == i
+            and route_j[0] == j
+        ):
+            merged = (
+                route_i
+                + route_j
+            )
+
+        # j at end, i at start
+        elif (
+            route_j[-1] == j
+            and route_i[0] == i
+        ):
+            merged = (
+                route_j
+                + route_i
+            )
+
+        # both start
+        elif (
+            route_i[0] == i
+            and route_j[0] == j
+        ):
+            merged = (
+                list(reversed(route_i))
+                + route_j
+            )
+
+        # both end
+        elif (
+            route_i[-1] == i
+            and route_j[-1] == j
+        ):
+            merged = (
+                route_i
+                + list(reversed(route_j))
+            )
+
+        if merged is None:
+            continue
+
+        #####################################################################
+        # HARD TIME-WINDOW CHECK
+        #####################################################################
+
+        if not route_feasible(merged):
+            continue
+
+        #####################################################################
+        # PERFORM MERGE
+        #####################################################################
+
+        routes[ri] = merged
+
+        loads[ri] += loads[rj]
+
+        for customer in merged:
+            customer_route[customer] = ri
+
+        del routes[rj]
+        del loads[rj]
+
+    solution = list(routes.values())
+
+    # Safety check
+    assert all(
+        route_feasible(route)
+        for route in solution
+    )
+
+    return solution
+
+
+#############################################################################
+# DESTROY OPERATORS
+#############################################################################
+
+def random_removal(solution, remove_count):
+
+    sol = copy.deepcopy(solution)
+
+    customers = []
+
+    for r, route in enumerate(sol):
+
+        for i, customer in enumerate(route):
+
+            customers.append(
+                (r, i, customer)
+            )
+
+    removed = random.sample(
+        customers,
+        remove_count
+    )
+
+    removed_customers = []
+
+    for r, i, customer in sorted(
+        removed,
+        reverse=True
+    ):
+
+        sol[r].pop(i)
+
+        removed_customers.append(
+            customer
+        )
+
+    sol = [
+        route
+        for route in sol
+        if len(route) > 0
+    ]
+
+    return sol, removed_customers
+
+
+#############################################################################
+# WORST REMOVAL
+#############################################################################
+
+def worst_removal(solution, remove_count):
+
+    sol = copy.deepcopy(solution)
+
+    scores = []
+
+    for r, route in enumerate(sol):
+
+        for i, customer in enumerate(route):
+
+            prev = (
+                0
+                if i == 0
+                else route[i - 1]
+            )
+
+            nxt = (
+                0
+                if i == len(route) - 1
+                else route[i + 1]
+            )
+
+            saving = (
+                distance[prev][customer]
+                + distance[customer][nxt]
+                - distance[prev][nxt]
+            )
+
+            scores.append(
+                (
+                    saving,
+                    r,
+                    i,
+                    customer
+                )
+            )
+
+    scores.sort(reverse=True)
+
+    removed = []
+
+    for _, r, i, customer in scores[:remove_count]:
+
+        if customer in sol[r]:
+
+            sol[r].remove(customer)
+
+            removed.append(customer)
+
+    sol = [
+        route
+        for route in sol
+        if len(route) > 0
+    ]
+
+    return sol, removed
+
+
+#############################################################################
+# REPAIR OPERATORS
+#############################################################################
+
+#############################################################################
+# RANDOM INSERT
+#############################################################################
+
+def random_insert(solution, removed):
+
+    sol = copy.deepcopy(solution)
+
+    removed = copy.deepcopy(removed)
+
+    random.shuffle(removed)
+
+    for customer in removed:
+
+        feasible_insertions = []
+
+        #####################################################################
+        # Existing routes
+        #####################################################################
+
+        for r, route in enumerate(sol):
+
+            if (
+                route_load(route)
+                + demands[customer]
+                > vehicle_capacity
+            ):
+                continue
+
+            for pos in range(len(route) + 1):
+
+                new_route = route[:]
+
+                new_route.insert(
+                    pos,
+                    customer
+                )
+
+                if route_feasible(new_route):
+
+                    feasible_insertions.append(
+                        (r, pos)
+                    )
+
+        #####################################################################
+        # Choose random feasible insertion
+        #####################################################################
+
+        if feasible_insertions:
+
+            r, pos = random.choice(
+                feasible_insertions
+            )
+
+            sol[r].insert(
+                pos,
+                customer
+            )
+
+        #####################################################################
+        # Otherwise create new route
+        #####################################################################
+
+        else:
+
+            new_route = [customer]
+
+            if route_feasible(new_route):
+
+                sol.append(new_route)
+
+            else:
+
+                raise ValueError(
+                    f"Customer {customer} cannot form "
+                    "a feasible route."
+                )
+
+    return sol
+
+
+#############################################################################
+# GREEDY INSERT
+#############################################################################
+
+def greedy_insert(solution, removed):
+
+    sol = copy.deepcopy(solution)
+
+    for customer in removed:
+
+        best_route = None
+        best_pos = None
+        best_increase = float("inf")
+
+        for r, route in enumerate(sol):
+
+            if (
+                route_load(route)
+                + demands[customer]
+                > vehicle_capacity
+            ):
+                continue
+
+            for pos in range(len(route) + 1):
+
+                new_route = route[:]
+
+                new_route.insert(
+                    pos,
+                    customer
+                )
+
+                #################################################################
+                # HARD TW CHECK
+                #################################################################
+
+                if not route_feasible(new_route):
+                    continue
+
+                increase = (
+                    route_cost(new_route)
+                    - route_cost(route)
+                )
+
+                if increase < best_increase:
+
+                    best_increase = increase
+                    best_route = r
+                    best_pos = pos
+
+        #####################################################################
+        # Insert into existing route
+        #####################################################################
+
+        if best_route is not None:
+
+            sol[best_route].insert(
+                best_pos,
+                customer
+            )
+
+        #####################################################################
+        # Create new route
+        #####################################################################
+
+        else:
+
+            new_route = [customer]
+
+            if route_feasible(new_route):
+
+                sol.append(new_route)
+
+            else:
+
+                raise ValueError(
+                    f"Customer {customer} cannot "
+                    "be inserted feasibly."
+                )
+
+    return sol
+
+
+#############################################################################
+# REGRET INSERTION
+#############################################################################
+
+def regret_insert(solution, removed):
+
+    sol = copy.deepcopy(solution)
+
+    removed = copy.deepcopy(removed)
+
+    while removed:
+
+        best_customer = None
+        best_route = None
+        best_pos = None
+
+        best_regret = -float("inf")
+
+        #####################################################################
+        # Evaluate every remaining customer
+        #####################################################################
+
+        for customer in removed:
+
+            insertions = []
+
+            for r, route in enumerate(sol):
+
+                if (
+                    route_load(route)
+                    + demands[customer]
+                    > vehicle_capacity
+                ):
+                    continue
+
+                for pos in range(len(route) + 1):
+
+                    new_route = route[:]
+
+                    new_route.insert(
+                        pos,
+                        customer
+                    )
+
+                    #################################################################
+                    # HARD TW CHECK
+                    #################################################################
+
+                    if not route_feasible(new_route):
+                        continue
+
+                    increase = (
+                        route_cost(new_route)
+                        - route_cost(route)
+                    )
+
+                    insertions.append(
+                        (
+                            increase,
+                            r,
+                            pos
+                        )
+                    )
+
+            #################################################################
+            # No feasible existing-route insertion
+            #################################################################
+
+            if not insertions:
+                continue
+
+            insertions.sort(
+                key=lambda x: x[0]
+            )
+
+            best = insertions[0]
+
+            if len(insertions) > 1:
+
+                second_best = insertions[1]
+
+                regret = (
+                    second_best[0]
+                    - best[0]
+                )
+
+            else:
+
+                regret = 0
+
+            #################################################################
+            # Customer with largest regret
+            #################################################################
+
+            if regret > best_regret:
+
+                best_regret = regret
+
+                best_customer = customer
+                best_route = best[1]
+                best_pos = best[2]
+
+        #####################################################################
+        # Insert selected customer
+        #####################################################################
+
+        if best_customer is not None:
+
+            sol[best_route].insert(
+                best_pos,
+                best_customer
+            )
+
+            removed.remove(
+                best_customer
+            )
+
+        #####################################################################
+        # No existing route can accept any customer
+        #####################################################################
+
+        else:
+
+            customer = removed.pop(0)
+
+            new_route = [customer]
+
+            if route_feasible(new_route):
+
+                sol.append(new_route)
+
+            else:
+
+                raise ValueError(
+                    f"Customer {customer} cannot "
+                    "form a feasible route."
+                )
+
+    return sol
+
+
+#############################################################################
+# ALNS
+#############################################################################
+
+destroy_ops = [
+    random_removal,
+    worst_removal
+]
+
+repair_ops = [
+    random_insert,
+    greedy_insert
+]
+
+destroy_weights = [
+    1.0,
+    1.0
+]
+
+repair_weights = [
+    1.0,
+    1.0
+]
+
+
+#############################################################################
+# OPERATOR SELECTION
+#############################################################################
+
+def choose(weights):
+
+    total = sum(weights)
+
+    r = random.random() * total
+
+    cumulative = 0
+
+    for i, weight in enumerate(weights):
+
+        cumulative += weight
+
+        if cumulative >= r:
+            return i
+
+    return len(weights) - 1
+
+
+#############################################################################
+# ALNS
+#############################################################################
+
+def alns(
+    remove_fraction,
+    iterations=3000,
+    temperature=1000,
+    cooling=0.995
+):
+
+    current = CW_initial_solution()
+
+    current_cost = objective(current)
+
+    best = copy.deepcopy(current)
+
+    best_cost = current_cost
+
+    for iteration in range(iterations):
+
+        #####################################################################
+        # Number removed
+        #####################################################################
+
+        remove_count = max(
+            1,
+            int(remove_fraction * (n - 1))
+        )
+
+        remove_count = min(
+            remove_count,
+            n - 1
+        )
+
+        #####################################################################
+        # Choose operators
+        #####################################################################
+
+        d = choose(
+            destroy_weights
+        )
+
+        r = choose(
+            repair_weights
+        )
+
+        #####################################################################
+        # Destroy
+        #####################################################################
+
+        partial, removed = destroy_ops[d](
+            current,
+            remove_count
+        )
+
+        #####################################################################
+        # Repair
+        #####################################################################
+
+        candidate = repair_ops[r](
+            partial,
+            removed
+        )
+
+        #####################################################################
+        # Safety check
+        #####################################################################
+
+        if not all(
+            route_feasible(route)
+            for route in candidate
+        ):
+            continue
+
+        #####################################################################
+        # Objective
+        #####################################################################
+
+        candidate_cost = objective(
+            candidate
+        )
+
+        delta = (
+            candidate_cost
+            - current_cost
+        )
+
+        #####################################################################
+        # Acceptance
+        #####################################################################
+
+        accept = False
+
+        if delta < 0:
+
+            accept = True
+
+        else:
+
+            if temperature > 0:
+
+                probability = math.exp(
+                    -delta / temperature
+                )
+
+                if random.random() < probability:
+
+                    accept = True
+
+        #####################################################################
+        # Update
+        #####################################################################
+
+        if accept:
+
+            current = candidate
+
+            current_cost = candidate_cost
+
+            #################################################################
+            # New global best
+            #################################################################
+
+            if current_cost < best_cost:
+
+                best = copy.deepcopy(
+                    current
+                )
+
+                best_cost = current_cost
+
+                destroy_weights[d] += 20
+                repair_weights[r] += 20
+
+            #################################################################
+            # Improved current solution
+            #################################################################
+
+            elif delta < 0:
+
+                destroy_weights[d] += 7
+                repair_weights[r] += 7
+
+            #################################################################
+            # Accepted worse solution
+            #################################################################
+
+            else:
+
+                destroy_weights[d] += 1
+                repair_weights[r] += 1
+
+        #####################################################################
+        # Weight decay
+        #####################################################################
+
+        destroy_weights[d] *= 0.995
+        repair_weights[r] *= 0.995
+
+        #####################################################################
+        # Cool
+        #####################################################################
+
+        temperature *= cooling
+
+    return best, best_cost
+
+
+#############################################################################
+# EXPERIMENT
+#############################################################################
+
+fractions = [0.1,0.2,
+    0.3,0.4
+]
+
+runs = 10
+
+
+print(
+    f"{'Fraction':<12}"
+    f"{'Mean Cost':<12}"
+    f"{'Best Cost':<12}"
+    f"{'Std Dev':<12}"
+    f"{'Runtime':<12}"
+    f"{'Gap (%)':<10}"
+)
+
+
+for fraction in fractions:
+
+    costs = []
+    runtimes = []
+
+    for seed in range(runs):
+
+        random.seed(seed)
+
+        #####################################################################
+        # RESET ALL WEIGHTS
+        #####################################################################
+
+        destroy_weights[:] = [
+            1.0,
+            1.0
+        ]
+
+        repair_weights[:] = [
+            1.0,
+            1.0
+        ]
+
+        #####################################################################
+        # Run
+        #####################################################################
+
+        start = time.time()
+
+        best_solution, best_objective = alns(
+            remove_fraction=fraction
+        )
+
+        runtime = (
+            time.time()
+            - start
+        )
+
+        #####################################################################
+        # Actual distance
+        #####################################################################
+
+        cost = total_cost(
+            best_solution
+        )
+
+        costs.append(cost)
+
+        runtimes.append(runtime)
+
+    #########################################################################
+    # Statistics
+    #########################################################################
+
+    mean_cost = (
+        sum(costs)
+        / len(costs)
+    )
+
+    best_cost = min(costs)
+
+    variance = (
+        sum(
+            (x - mean_cost) ** 2
+            for x in costs
+        )
+        / len(costs)
+    )
+
+    std = math.sqrt(
+        variance
+    )
+
+    mean_runtime = (
+        sum(runtimes)
+        / len(runtimes)
+    )
+
+    gap = (
+        (mean_cost - OPTIMAL_COST)
+        / OPTIMAL_COST
+    ) * 100
+
+    print(
+        f"{fraction:<12.2f}"
+        f"{mean_cost:<12.2f}"
+        f"{best_cost:<12.2f}"
+        f"{std:<12.2f}"
+        f"{mean_runtime:<12.3f}"
+        f"{gap:<10.2f}"
+    )
