@@ -1,0 +1,1041 @@
+import numpy as np
+import random
+import math
+import time
+import vrplib
+
+
+# ============================================================
+# SETTINGS
+# ============================================================
+
+random.seed(20)
+np.random.seed(20)
+
+INSTANCE = "Instances/B-n35-k5.vrp"
+
+# Crispin & Syrichas parameters
+P = 40
+T = 0.0225
+GAMMA = 3.0
+GAMMA_DECREMENT = 0.0
+
+# Use 10,000 initially.
+# Paper uses 5,000,000.
+MC_STEPS = 20_000
+
+NUM_RUNS = 5
+
+OPTIMAL_COST = 955
+
+
+# ============================================================
+# LOAD INSTANCE
+# ============================================================
+
+instance = vrplib.read_instance(INSTANCE)
+
+coordinates = {
+    i: tuple(instance["node_coord"][i])
+    for i in range(len(instance["node_coord"]))
+}
+
+demands = {
+    i: int(instance["demand"][i])
+    for i in range(len(instance["demand"]))
+}
+
+vehicle_capacity = int(instance["capacity"])
+
+DEPOT = 0
+
+customers = [
+    i for i in coordinates
+    if i != DEPOT
+]
+
+# E-n76-k8
+NUM_VEHICLES = 8
+
+
+# ============================================================
+# DISTANCE MATRIX
+# ============================================================
+
+n = len(coordinates)
+
+distance_matrix = np.zeros((n, n))
+
+for i in coordinates:
+    for j in coordinates:
+        xi, yi = coordinates[i]
+        xj, yj = coordinates[j]
+
+        distance_matrix[i, j] = math.sqrt(
+            (xi - xj) ** 2 +
+            (yi - yj) ** 2
+        )
+
+
+# ============================================================
+# ROUTE FUNCTIONS
+# ============================================================
+
+def route_load(route):
+    return sum(demands[i] for i in route)
+
+
+def route_cost(route):
+
+    if not route:
+        return 0.0
+
+    cost = distance_matrix[
+        DEPOT,
+        route[0]
+    ]
+
+    for i in range(len(route) - 1):
+        cost += distance_matrix[
+            route[i],
+            route[i + 1]
+        ]
+
+    cost += distance_matrix[
+        route[-1],
+        DEPOT
+    ]
+
+    return cost
+
+
+def solution_cost(solution):
+    return sum(
+        route_cost(route)
+        for route in solution
+    )
+
+
+def feasible(solution):
+
+    seen = []
+
+    for route in solution:
+
+        if route_load(route) > vehicle_capacity:
+            return False
+
+        seen.extend(route)
+
+    return sorted(seen) == sorted(customers)
+
+
+# ============================================================
+# FAST COPY
+# ============================================================
+
+def copy_solution(solution):
+    """
+    Much faster than copy.deepcopy() because our solution
+    only contains lists of integers.
+    """
+
+    return [
+        route.copy()
+        for route in solution
+    ]
+
+
+# ============================================================
+# RANDOM INITIAL SOLUTION
+# ============================================================
+
+def random_initial_solution():
+
+    while True:
+
+        shuffled = customers.copy()
+        random.shuffle(shuffled)
+
+        solution = [
+            []
+            for _ in range(NUM_VEHICLES)
+        ]
+
+        success = True
+
+        for customer in shuffled:
+
+            feasible_routes = [
+                r
+                for r in range(NUM_VEHICLES)
+                if (
+                    route_load(solution[r])
+                    + demands[customer]
+                    <= vehicle_capacity
+                )
+            ]
+
+            if not feasible_routes:
+                success = False
+                break
+
+            r = random.choice(feasible_routes)
+
+            position = random.randint(
+                0,
+                len(solution[r])
+            )
+
+            solution[r].insert(
+                position,
+                customer
+            )
+
+        if success:
+            return solution
+
+
+# ============================================================
+# SPIN REPRESENTATION
+# ============================================================
+
+def solution_to_edges(solution):
+    """
+    The paper uses a symmetric spin/connectivity matrix.
+
+    Instead of storing the full NxN matrix, we store the
+    non-zero upper-triangular entries as a set of edges.
+
+    This is mathematically equivalent for SpinProducts().
+    """
+
+    edges = set()
+
+    for route in solution:
+
+        if not route:
+            continue
+
+        previous = DEPOT
+
+        for customer in route:
+
+            edge = tuple(
+                sorted((previous, customer))
+            )
+
+            edges.add(edge)
+
+            previous = customer
+
+        # Return to depot
+        edge = tuple(
+            sorted((previous, DEPOT))
+        )
+
+        edges.add(edge)
+
+    return edges
+
+
+# ============================================================
+# SPIN PRODUCTS
+# ============================================================
+
+def spin_products(
+    edges_previous,
+    edges_current,
+    edges_next
+):
+    """
+    Equivalent to:
+
+    Sum S_previous * S_current
+    +
+    Sum S_current * S_next
+
+    over i < j.
+
+    Set intersection gives the number of shared connections.
+    """
+
+    return (
+        len(
+            edges_previous
+            & edges_current
+        )
+        +
+        len(
+            edges_current
+            & edges_next
+        )
+    )
+
+
+# ============================================================
+# NEIGHBOURHOOD OPERATORS
+# ============================================================
+
+def nonempty_routes(solution):
+
+    return [
+        r
+        for r, route in enumerate(solution)
+        if route
+    ]
+
+
+# ------------------------------------------------------------
+# INSERT
+# ------------------------------------------------------------
+
+def insert_move(solution):
+
+    new_solution = copy_solution(solution)
+
+    sources = nonempty_routes(new_solution)
+
+    if not sources:
+        return None
+
+    source = random.choice(sources)
+
+    customer = random.choice(
+        new_solution[source]
+    )
+
+    destinations = [
+        r
+        for r in range(NUM_VEHICLES)
+        if r != source
+    ]
+
+    random.shuffle(destinations)
+
+    for destination in destinations:
+
+        if (
+            route_load(new_solution[destination])
+            + demands[customer]
+            <= vehicle_capacity
+        ):
+
+            new_solution[source].remove(
+                customer
+            )
+
+            position = random.randint(
+                0,
+                len(new_solution[destination])
+            )
+
+            new_solution[destination].insert(
+                position,
+                customer
+            )
+
+            return new_solution
+
+    return None
+
+
+# ------------------------------------------------------------
+# SWAP
+# ------------------------------------------------------------
+
+def swap_move(solution):
+
+    new_solution = copy_solution(solution)
+
+    routes = nonempty_routes(new_solution)
+
+    if len(routes) < 2:
+        return None
+
+    r1, r2 = random.sample(routes, 2)
+
+    i = random.randrange(
+        len(new_solution[r1])
+    )
+
+    j = random.randrange(
+        len(new_solution[r2])
+    )
+
+    c1 = new_solution[r1][i]
+    c2 = new_solution[r2][j]
+
+    load1 = (
+        route_load(new_solution[r1])
+        - demands[c1]
+        + demands[c2]
+    )
+
+    load2 = (
+        route_load(new_solution[r2])
+        - demands[c2]
+        + demands[c1]
+    )
+
+    if (
+        load1 <= vehicle_capacity
+        and
+        load2 <= vehicle_capacity
+    ):
+
+        new_solution[r1][i] = c2
+        new_solution[r2][j] = c1
+
+        return new_solution
+
+    return None
+
+
+# ------------------------------------------------------------
+# 2-OPT
+# ------------------------------------------------------------
+
+def two_opt_move(solution):
+
+    new_solution = copy_solution(solution)
+
+    routes = [
+        r
+        for r in range(NUM_VEHICLES)
+        if len(new_solution[r]) >= 4
+    ]
+
+    if not routes:
+        return None
+
+    r = random.choice(routes)
+
+    route = new_solution[r]
+
+    i, j = sorted(
+        random.sample(
+            range(len(route)),
+            2
+        )
+    )
+
+    route[i:j + 1] = reversed(
+        route[i:j + 1]
+    )
+
+    return new_solution
+
+
+# ------------------------------------------------------------
+# CROSS
+# ------------------------------------------------------------
+
+def cross_move(solution):
+
+    new_solution = copy_solution(solution)
+
+    routes = [
+        r
+        for r in range(NUM_VEHICLES)
+        if len(new_solution[r]) >= 2
+    ]
+
+    if len(routes) < 2:
+        return None
+
+    r1, r2 = random.sample(routes, 2)
+
+    route1 = new_solution[r1]
+    route2 = new_solution[r2]
+
+    i1, j1 = sorted(
+        random.sample(
+            range(len(route1)),
+            2
+        )
+    )
+
+    i2, j2 = sorted(
+        random.sample(
+            range(len(route2)),
+            2
+        )
+    )
+
+    segment1 = route1[
+        i1:j1 + 1
+    ]
+
+    segment2 = route2[
+        i2:j2 + 1
+    ]
+
+    load1 = (
+        route_load(route1)
+        - sum(demands[x] for x in segment1)
+        + sum(demands[x] for x in segment2)
+    )
+
+    load2 = (
+        route_load(route2)
+        - sum(demands[x] for x in segment2)
+        + sum(demands[x] for x in segment1)
+    )
+
+    if (
+        load1 <= vehicle_capacity
+        and
+        load2 <= vehicle_capacity
+    ):
+
+        new_solution[r1] = (
+            route1[:i1]
+            + segment2
+            + route1[j1 + 1:]
+        )
+
+        new_solution[r2] = (
+            route2[:i2]
+            + segment1
+            + route2[j2 + 1:]
+        )
+
+        return new_solution
+
+    return None
+
+
+# ------------------------------------------------------------
+# SCRAMBLE
+# ------------------------------------------------------------
+
+def scramble_move(solution):
+
+    new_solution = copy_solution(solution)
+
+    routes = [
+        r
+        for r in range(NUM_VEHICLES)
+        if len(new_solution[r]) >= 3
+    ]
+
+    if not routes:
+        return None
+
+    r = random.choice(routes)
+
+    route = new_solution[r]
+
+    i, j = sorted(
+        random.sample(
+            range(len(route)),
+            2
+        )
+    )
+
+    segment = route[
+        i:j + 1
+    ]
+
+    random.shuffle(segment)
+
+    route[
+        i:j + 1
+    ] = segment
+
+    return new_solution
+
+
+# ------------------------------------------------------------
+# STRING INSERT
+# ------------------------------------------------------------
+
+def string_insert_move(solution):
+
+    new_solution = copy_solution(solution)
+
+    sources = [
+        r
+        for r in range(NUM_VEHICLES)
+        if len(new_solution[r]) >= 2
+    ]
+
+    if not sources:
+        return None
+
+    source = random.choice(sources)
+
+    destinations = [
+        r
+        for r in range(NUM_VEHICLES)
+        if r != source
+    ]
+
+    if not destinations:
+        return None
+
+    destination = random.choice(
+        destinations
+    )
+
+    route = new_solution[source]
+
+    i, j = sorted(
+        random.sample(
+            range(len(route)),
+            2
+        )
+    )
+
+    segment = route[
+        i:j + 1
+    ]
+
+    segment_demand = sum(
+        demands[x]
+        for x in segment
+    )
+
+    if (
+        route_load(
+            new_solution[destination]
+        )
+        + segment_demand
+        > vehicle_capacity
+    ):
+        return None
+
+    del route[
+        i:j + 1
+    ]
+
+    position = random.randint(
+        0,
+        len(new_solution[destination])
+    )
+
+    new_solution[destination][
+        position:position
+    ] = segment
+
+    return new_solution
+
+
+# ------------------------------------------------------------
+# 2-OPT-STAR
+# ------------------------------------------------------------
+
+def two_opt_star_move(solution):
+
+    new_solution = copy_solution(solution)
+
+    routes = [
+        r
+        for r in range(NUM_VEHICLES)
+        if len(new_solution[r]) >= 2
+    ]
+
+    if len(routes) < 2:
+        return None
+
+    r1, r2 = random.sample(routes, 2)
+
+    route1 = new_solution[r1]
+    route2 = new_solution[r2]
+
+    cut1 = random.randint(
+        1,
+        len(route1) - 1
+    )
+
+    cut2 = random.randint(
+        1,
+        len(route2) - 1
+    )
+
+    first1 = route1[:cut1]
+    end1 = route1[cut1:]
+
+    first2 = route2[:cut2]
+    end2 = route2[cut2:]
+
+    candidate1 = first1 + end2
+    candidate2 = first2 + end1
+
+    if (
+        route_load(candidate1)
+        <= vehicle_capacity
+        and
+        route_load(candidate2)
+        <= vehicle_capacity
+    ):
+
+        new_solution[r1] = candidate1
+        new_solution[r2] = candidate2
+
+        return new_solution
+
+    return None
+
+
+# ============================================================
+# OPERATOR LIST
+# ============================================================
+
+NEIGHBOURS = [
+    insert_move,
+    swap_move,
+    two_opt_move,
+    cross_move,
+    scramble_move,
+    string_insert_move,
+    two_opt_star_move
+]
+
+
+def make_neighbour(solution):
+
+    for _ in range(10):
+
+        operator = random.choice(
+            NEIGHBOURS
+        )
+
+        candidate = operator(solution)
+
+        if candidate is not None:
+            return candidate
+
+    return None
+
+
+# ============================================================
+# QACVRP
+# ============================================================
+
+def qacvrp(
+    P=40,
+    T=0.0225,
+    gamma=3.0,
+    gamma_decrement=0.0,
+    Mc=20_000
+):
+
+    # --------------------------------------------------------
+    # INITIALISE P REPLICAS
+    # --------------------------------------------------------
+
+    replicas = []
+
+    for _ in range(P):
+
+        solution = random_initial_solution()
+
+        replicas.append({
+            "solution": solution,
+            "edges": solution_to_edges(solution),
+            "cost": solution_cost(solution)
+        })
+
+    # --------------------------------------------------------
+    # INITIAL BEST
+    # --------------------------------------------------------
+
+    best_replica = min(
+        replicas,
+        key=lambda x: x["cost"]
+    )
+
+    best_solution = copy_solution(
+        best_replica["solution"]
+    )
+
+    best_cost = best_replica["cost"]
+
+    # --------------------------------------------------------
+    # MAIN MONTE CARLO LOOP
+    # --------------------------------------------------------
+
+    for mc in range(Mc):
+
+        # ----------------------------------------------------
+        # PAPER:
+        #
+        # J = -(T/2) ln[tanh(gamma/(P*T))]
+        # ----------------------------------------------------
+
+        x = gamma / (P * T)
+
+        J = -(
+            T / 2.0
+        ) * math.log(
+            math.tanh(x)
+        )
+
+        # ----------------------------------------------------
+        # REPLICA LOOP
+        # ----------------------------------------------------
+
+        for z in range(P):
+
+            current = replicas[z]
+
+            previous = replicas[
+                (z - 1) % P
+            ]
+
+            next_replica = replicas[
+                (z + 1) % P
+            ]
+
+            # ------------------------------------------------
+            # Generate candidate
+            # ------------------------------------------------
+
+            candidate_solution = make_neighbour(
+                current["solution"]
+            )
+
+            if candidate_solution is None:
+                continue
+
+            # ------------------------------------------------
+            # Candidate edge representation
+            # ------------------------------------------------
+
+            candidate_edges = solution_to_edges(
+                candidate_solution
+            )
+
+            candidate_cost = solution_cost(
+                candidate_solution
+            )
+
+            # ------------------------------------------------
+            # Delta H_pot
+            # ------------------------------------------------
+
+            delta_H_pot = (
+                candidate_cost
+                - current["cost"]
+            )
+
+            # ------------------------------------------------
+            # Delta H_kin
+            # ------------------------------------------------
+
+            old_spin_product = spin_products(
+                previous["edges"],
+                current["edges"],
+                next_replica["edges"]
+            )
+
+            new_spin_product = spin_products(
+                previous["edges"],
+                candidate_edges,
+                next_replica["edges"]
+            )
+
+            delta_H_kin = (
+                new_spin_product
+                - old_spin_product
+            )
+
+            # ------------------------------------------------
+            # Delta H
+            #
+            # Paper:
+            #
+            # Delta H =
+            # Delta Hpot / P
+            # +
+            # J Delta Hkin
+            # ------------------------------------------------
+
+            delta_H = (
+                delta_H_pot / P
+                -
+                J * delta_H_kin
+            )
+
+            # ------------------------------------------------
+            # ACCEPTANCE
+            # ------------------------------------------------
+
+            accept = False
+
+            # Paper line 12
+            if (
+                delta_H_pot <= 0
+                or
+                delta_H <= 0
+            ):
+
+                accept = True
+
+            else:
+
+                exponent = -delta_H / T
+
+                if exponent > -700:
+
+                    probability = math.exp(
+                        exponent
+                    )
+
+                    if (
+                        random.random()
+                        < probability
+                    ):
+                        accept = True
+
+            # ------------------------------------------------
+            # ACCEPT CANDIDATE
+            # ------------------------------------------------
+
+            if accept:
+
+                replicas[z]["solution"] = (
+                    candidate_solution
+                )
+
+                replicas[z]["edges"] = (
+                    candidate_edges
+                )
+
+                replicas[z]["cost"] = (
+                    candidate_cost
+                )
+
+                # --------------------------------------------
+                # GLOBAL BEST
+                # --------------------------------------------
+
+                if candidate_cost < best_cost:
+
+                    best_cost = candidate_cost
+
+                    best_solution = copy_solution(
+                        candidate_solution
+                    )
+
+        # ----------------------------------------------------
+        # Gamma decrement
+        # ----------------------------------------------------
+
+        gamma = max(
+            0.0,
+            gamma - gamma_decrement
+        )
+
+        # ----------------------------------------------------
+        # Progress
+        # ----------------------------------------------------
+
+        if (
+            (mc + 1)
+            % max(1, Mc // 10)
+            == 0
+        ):
+
+            print(
+                f"MC {mc + 1}/{Mc} | "
+                f"Best = {best_cost:.2f} | "
+                f"gamma = {gamma:.4f} | "
+                f"J = {J:.6f}"
+            )
+
+    return best_solution, best_cost
+
+
+# ============================================================
+# MULTIPLE RUNS
+# ============================================================
+
+if __name__ == "__main__":
+
+    print("=" * 70)
+    print("QACVRP - Crispin & Syrichas PIMC Quantum Annealing")
+    print("=" * 70)
+
+    print(
+        f"P={P}, "
+        f"T={T}, "
+        f"gamma={GAMMA}, "
+        f"gamma decrement={GAMMA_DECREMENT}, "
+        f"Mc={MC_STEPS}"
+    )
+
+    print(
+        f"Effective quantum temperature PT = "
+        f"{P*T:.4f}"
+    )
+
+    print()
+
+    results = []
+    runtimes = []
+
+    for run in range(NUM_RUNS):
+
+        start = time.time()
+
+        best_solution, best_cost = qacvrp(
+            P=P,
+            T=T,
+            gamma=GAMMA,
+            gamma_decrement=GAMMA_DECREMENT,
+            Mc=MC_STEPS
+        )
+
+        elapsed = time.time() - start
+
+        results.append(best_cost)
+        runtimes.append(elapsed)
+
+        print(
+            f"Run {run + 1}: "
+            f"cost={best_cost:.2f}, "
+            f"time={elapsed:.3f}s"
+        )
+
+    # ========================================================
+    # SUMMARY
+    # ========================================================
+
+    mean_cost = np.mean(results)
+    best_cost = np.min(results)
+    std_cost = np.std(results)
+    mean_runtime = np.mean(runtimes)
+
+    gap = (
+        (best_cost - OPTIMAL_COST)
+        / OPTIMAL_COST
+        * 100
+    )
+
+    print()
+    print("=" * 70)
+
+    print(
+        f"Mean cost:       {mean_cost:.2f}"
+    )
+
+    print(
+        f"Best cost:       {best_cost:.2f}"
+    )
+
+    print(
+        f"Std deviation:   {std_cost:.2f}"
+    )
+
+    print(
+        f"Mean runtime:    {mean_runtime:.3f} seconds"
+    )
+
+    print(
+        f"Gap to optimal:  {gap:.2f}%"
+    )
+
+    print("=" * 70)

@@ -1,0 +1,829 @@
+import numpy as np
+import random
+import time
+import matplotlib.pyplot as plt
+import math
+import copy
+import vrplib
+
+random.seed(20)
+
+OPTIMAL_COST = 735
+
+instance = vrplib.read_instance("Instances/"
+"E-n76-k8.vrp")
+
+
+coordinates = {
+    i: tuple(instance["node_coord"][i])
+    for i in range(len(instance["node_coord"]))
+}
+
+demands = {
+    i: int(instance["demand"][i])
+    for i in range(len(instance["demand"]))
+}
+
+vehicle_capacity = instance["capacity"]
+
+# create customer distances
+def euclidean(a, b):
+    return round(math.hypot(a[0]-b[0], a[1]-b[1]), 1)
+
+n = len(coordinates)
+
+distance = [
+    [euclidean(coordinates[i], coordinates[j]) for j in range(n)]
+    for i in range(n)
+]
+
+# minimumn number of feasible vechiles
+min_K = math.ceil(sum(demands.values()) / vehicle_capacity)
+
+
+def route_load(route):
+    return sum(demands[i] for i in route)
+
+
+def route_cost(route):
+    if len(route) == 0:
+        return 0
+
+    cost = distance[0][route[0]]
+
+    for i in range(len(route) - 1):
+        cost += distance[route[i]][route[i + 1]]
+
+    cost += distance[route[-1]][0]
+
+    return cost
+
+
+vehicle_penalty = 200  # large enough to dominate distance
+
+
+# Actual CVRP cost
+def total_cost(solution):
+    return sum(route_cost(r) for r in solution)
+
+
+def feasible(solution):
+    return all(route_load(r) <= vehicle_capacity for r in solution)
+
+
+# Objective used by simulated annealing (cost with extra vehicle penalty)
+# Capacity feasibility is checked here directly: any solution that
+# violates vehicle_capacity on any route is scored as infeasible
+# (inf), rather than silently allowed through. This means ANY
+# algorithm that calls objective() - classical SA, SQA, etc. - gets
+# the capacity guard automatically, without needing a separate
+# feasible() check in each move loop.
+def objective(solution):
+    if not feasible(solution):
+        return float("inf")
+
+    extra = max(0, len(solution) - min_K)
+    return total_cost(solution) + vehicle_penalty * extra
+
+# generate initial sol via parallel clarke and wright savings method
+def CW_initial_solution():
+
+    # initial routes
+    routes = {i: [i] for i in range(1, n)}
+    loads = {i: demands[i] for i in range(1, n)}
+    customer_route = {i: i for i in range(1, n)}
+
+    # compute savings
+    savings = []
+    for i in range(1, n):
+        for j in range(i + 1, n):
+            s = (
+                distance[0][i]
+                + distance[0][j]
+                - distance[i][j]
+            )
+            savings.append((s, i, j))
+    savings.sort(reverse=True)
+
+    # -----------------------------
+    # Merge routes
+    # -----------------------------
+    for saving, i, j in savings:
+        if saving <= 0:
+            break  # no point merging routes that don't save distance
+
+        ri = customer_route[i]
+        rj = customer_route[j]
+        if ri == rj:
+            continue
+
+        route_i = routes[ri]
+        route_j = routes[rj]
+
+        if loads[ri] + loads[rj] > vehicle_capacity:
+            continue
+
+        merged = None
+        # i at end of route_i, j at start of route_j
+        if route_i[-1] == i and route_j[0] == j:
+            merged = route_i + route_j
+        # j at end of route_j, i at start of route_i
+        elif route_j[-1] == j and route_i[0] == i:
+            merged = route_j + route_i
+        # both start points
+        elif route_i[0] == i and route_j[0] == j:
+            merged = list(reversed(route_i)) + route_j
+        # both end points
+        elif route_i[-1] == i and route_j[-1] == j:
+            merged = route_i + list(reversed(route_j))
+
+        if merged is None:
+            continue
+
+        # -----------------------------
+        # Perform merge
+        # -----------------------------
+        routes[ri] = merged
+        loads[ri] += loads[rj]
+        for customer in merged:
+            customer_route[customer] = ri
+        del routes[rj]
+        del loads[rj]
+
+    return list(routes.values())
+
+def random_initial_solution():
+
+    customers = list(range(1, n))
+    random.shuffle(customers)
+
+    solution = []
+
+    for customer in customers:
+
+        feasible_routes = []
+
+        for r in range(len(solution)):
+
+            if (
+                route_load(solution[r])
+                + demands[customer]
+                <= vehicle_capacity
+            ):
+                feasible_routes.append(r)
+
+        # Sometimes create a new route
+        if not feasible_routes or random.random() < 0.2:
+
+            solution.append([customer])
+
+        else:
+
+            r = random.choice(feasible_routes)
+
+            position = random.randint(
+                0,
+                len(solution[r])
+            )
+
+            solution[r].insert(
+                position,
+                customer
+            )
+
+    return solution
+
+
+
+# ============================================================
+# LOCAL MOVE OPERATORS
+# (routes hold customer indices only; depot 0 is implicit,
+#  matching route_cost's convention above)
+# ============================================================
+
+# inter-route operations
+## relocate customer into different route
+def inter_relocate(solution):
+    sol = copy.deepcopy(solution)
+
+    if len(sol) == 0:
+        return sol
+
+    r1 = random.randrange(len(sol))
+    if len(sol[r1]) == 0:
+        return sol
+
+    c_index = random.randrange(len(sol[r1]))
+    customer = sol[r1].pop(c_index)
+
+    if len(sol[r1]) == 0:
+        sol.pop(r1)
+
+    if len(sol) == 0:
+        sol.append([customer])
+        return sol
+
+    r2 = random.randrange(len(sol))
+
+    if route_load(sol[r2]) + demands[customer] <= vehicle_capacity:
+        pos = random.randrange(len(sol[r2])+1)
+        sol[r2].insert(pos, customer)
+    else:
+        sol.append([customer])
+
+    return sol
+
+## swap customers between routes
+def inter_swap(solution):
+
+    sol = copy.deepcopy(solution)
+
+    # check at least 2 routes so swap possible
+    if len(sol) < 2:
+        return sol
+
+    # select routes randomly
+    r1, r2 = random.sample(range(len(sol)), 2)
+
+    # check routes not empty
+    if len(sol[r1]) == 0 or len(sol[r2]) == 0:
+        return sol
+
+    # choose random customers
+    i = random.randrange(len(sol[r1]))
+    j = random.randrange(len(sol[r2]))
+
+    # store random customers
+    a = sol[r1][i]
+    b = sol[r2][j]
+
+    # calculate new loads of routes
+    load1 = route_load(sol[r1]) - demands[a] + demands[b]
+    load2 = route_load(sol[r2]) - demands[b] + demands[a]
+
+    # check swap feasible
+    if load1 <= vehicle_capacity and load2 <= vehicle_capacity:
+        sol[r1][i], sol[r2][j] = sol[r2][j], sol[r1][i]
+
+    return sol
+
+## exchange tails of two routes
+def inter_2_opt(solution):
+
+    sol = copy.deepcopy(solution)
+
+    # check at least two routes
+    if len(sol) < 2:
+        return sol
+
+    # routes with at least two customers
+    routes = [i for i, r in enumerate(sol) if len(r) >= 2]
+
+    # check at least two elidgible routes
+    if len(routes) < 2:
+        return sol
+
+    # pick two random routes
+    r1, r2 = random.sample(routes, 2)
+
+    # choose random customer in each route
+    i = random.randrange(len(sol[r1]))
+    j = random.randrange(len(sol[r2]))
+
+    # exchange route tails
+    new_route1 = sol[r1][:i] + sol[r2][j:]
+    new_route2 = sol[r2][:j] + sol[r1][i:]
+
+    # Check feasible
+    if (route_load(new_route1) <= vehicle_capacity and
+        route_load(new_route2) <= vehicle_capacity):
+
+        sol[r1] = new_route1
+        sol[r2] = new_route2
+
+    return sol
+
+
+# intra-route operations
+## relocate customer in its own route
+def intra_relocate(solution):
+
+    sol = copy.deepcopy(solution)
+
+    if len(sol) == 0:
+            return sol
+    
+    # pick random route 
+    r = random.randrange(len(sol))
+
+    if len(sol[r]) == 0:
+        return sol
+
+    c_index = random.randrange(len(sol[r]))
+    # pick random customer in route and remove from route
+    customer = sol[r].pop(c_index)
+
+    # choose a new position in the same route
+    new_position = random.randrange(len(sol[r]) + 1)
+
+    # insert customer back into same route
+    sol[r].insert(new_position, customer)
+
+    return sol
+
+## swap customers in same route
+def intra_swap(solution):
+
+    sol = copy.deepcopy(solution)
+
+    # pick random route 
+    r = random.randrange(len(sol))
+
+    # check at least two customers in route
+    if len(sol[r]) < 2:
+        return sol
+
+    # choose two distinct customers
+    i, j = random.sample(range(len(sol[r])), 2)
+
+    # swap the customers
+    sol[r][i], sol[r][j] = sol[r][j], sol[r][i]
+
+    return sol
+
+## reverses  a section of one route
+def intra_2_opt(solution):
+
+    sol = copy.deepcopy(solution)
+
+    # find routes long enough for impactful reversal
+    routes = [r for r in sol if len(r) >= 4]
+
+    # check at least one elidgible route exists
+    if not routes:
+        return sol
+
+    # pick random route
+    r = random.choice(routes)
+    idx = sol.index(r)
+
+    # pick two customers in route
+    i, j = sorted(random.sample(range(len(r)), 2))
+
+    # ensure section to reverse is big enough
+    if j-i < 2:
+        return sol
+
+    # reverse section between selected customers
+    r[i:j] = reversed(r[i:j])
+
+    # replace og route
+    sol[idx] = r
+
+    return sol
+
+# pick perturbation
+def random_neighbour(solution, weights):
+
+    move = random.choices(
+    [
+        inter_relocate,
+        inter_swap,
+        inter_2_opt,
+        intra_relocate,
+        intra_swap,
+        intra_2_opt
+    ],
+    weights=weights,
+    k=1
+    )[0]
+
+    return move(solution)
+
+
+# ============================================================
+# SPIN MATRIX / REPLICA COUPLING
+# ============================================================
+
+def solution_to_spin_matrix(solution):
+    """
+    Convert a CVRP solution into a binary spin/connection matrix.
+
+    S[i][j] = 1 if the directed connection i -> j is present
+              0 otherwise.
+
+    Depot = node 0.
+    """
+
+    S = np.zeros((n, n), dtype=np.int8)
+
+    for route in solution:
+
+        if not route:
+            continue
+
+        previous = 0
+
+        for customer in route:
+            S[previous][customer] = 1
+            previous = customer
+
+        # Return to depot
+        S[previous][0] = 1
+
+    return S
+
+
+def spin_products(S_left, S_current, S_right):
+    """
+    Calculate the spin-product term for three neighbouring
+    replicas.
+
+    For a 0/1 connection encoding, corresponding connections
+    contribute when they are present in both neighbouring
+    pairs:
+
+        S_left  * S_current
+        S_current * S_right
+
+    The two contributions are summed over all matrix entries.
+    """
+
+    left_product = np.sum(S_left * S_current)
+    right_product = np.sum(S_current * S_right)
+
+    return left_product + right_product
+
+
+def kinetic_energy_change(S_left, S_old, S_new, S_right):
+    """
+    Change in the spin-product / kinetic term when the current
+    replica changes from S_old to S_new.
+    """
+
+    old_products = spin_products(
+        S_left,
+        S_old,
+        S_right
+    )
+
+    new_products = spin_products(
+        S_left,
+        S_new,
+        S_right
+    )
+
+    return new_products - old_products
+
+
+def inter_replica_coupling(temperature, gamma, num_replicas):
+    """
+    Coupling strength J from the Suzuki-Trotter mapping.
+
+    J = -(T/2) * ln(tanh(gamma/(P*T)))
+    """
+
+    x = gamma / (num_replicas * temperature)
+    x = max(x, 1e-8)
+
+    tanh_x = math.tanh(x)
+    tanh_x = min(max(tanh_x, 1e-12), 1 - 1e-12)
+
+    return -(temperature / 2.0) * math.log(tanh_x)
+
+
+# ============================================================
+# PATH-INTEGRAL SIMULATED QUANTUM ANNEALING
+# ============================================================
+
+def simulated_quantum_annealing(
+    num_replicas=20,
+    iterations_per_temperature=300,
+    initial_temp = 0.045,
+    weights = [2,2,2, 1, 1, 1],
+    initial_gamma = 1.0,
+    gamma_decay = 1.0,
+    final_gamma = 1.0,
+    track_history=False
+):
+
+    replicas = [ CW_initial_solution()
+                ]
+
+    replicas += [
+        random_initial_solution()
+        for _ in range(num_replicas )
+    ]
+    random.shuffle(replicas)
+
+    replica_costs = [
+        objective(r) for r in replicas
+    ]
+    
+    # --------------------------------------------------------
+    # Spin matrix for every replica
+    # --------------------------------------------------------
+
+    spin_matrices = [
+        solution_to_spin_matrix(r)
+        for r in replicas
+    ]
+
+    # --------------------------------------------------------
+    # Initial best solution
+    # --------------------------------------------------------
+
+    best_index = np.argmin(replica_costs)
+
+    best = copy.deepcopy(replicas[best_index])
+    best_cost = replica_costs[best_index]
+
+    temperature = initial_temp
+    gamma = initial_gamma
+
+    history = [] if track_history else None
+
+    # --------------------------------------------------------
+    # Monte Carlo / annealing loop
+    # --------------------------------------------------------
+
+    while temperature > final_temp:
+
+        J = inter_replica_coupling(
+            temperature,
+            gamma,
+            num_replicas
+        )
+
+        for _ in range(iterations_per_temperature):
+
+            # Choose current replica
+            k = random.randrange(num_replicas)
+
+            left = (k - 1) % num_replicas
+            right = (k + 1) % num_replicas
+
+            # ------------------------------------------------
+            # Generate candidate using CVRP neighbourhood move
+            # ------------------------------------------------
+
+            candidate = random_neighbour(replicas[k],weights)
+
+            if not feasible(candidate):
+                continue
+
+            candidate_cost = objective(candidate)
+
+            # ------------------------------------------------
+            # Potential energy change
+            # ------------------------------------------------
+
+            delta_hpot = (
+                candidate_cost
+                - replica_costs[k]
+            )
+
+            # ------------------------------------------------
+            # Convert candidate to spin matrix
+            # ------------------------------------------------
+
+            candidate_spin = solution_to_spin_matrix(candidate)
+
+            # ------------------------------------------------
+            # Spin-product / kinetic-energy change
+            # ------------------------------------------------
+
+            delta_hkin = kinetic_energy_change(
+                spin_matrices[left],
+                spin_matrices[k],
+                candidate_spin,
+                spin_matrices[right]
+            )
+
+            # ------------------------------------------------
+            # Total energy change
+            # ------------------------------------------------
+
+            delta_H = (
+                delta_hpot / num_replicas
+                - J * delta_hkin
+            )
+
+            # acceptance
+
+            if delta_H <= 0:
+
+                accept = True
+
+            else:
+
+                acceptance_probability = math.exp(
+                    -delta_H / temperature
+                )
+
+                accept = (
+                    random.random()
+                    < acceptance_probability
+                )
+
+            # ------------------------------------------------
+            # Accept candidate
+            # ------------------------------------------------
+
+            if accept:
+
+                replicas[k] = candidate
+                replica_costs[k] = candidate_cost
+                spin_matrices[k] = candidate_spin
+
+                # Global best based on potential energy
+                if candidate_cost < best_cost:
+
+                    best_cost = candidate_cost
+                    best = copy.deepcopy(candidate)
+
+        # ----------------------------------------------------
+        # Record history
+        # ----------------------------------------------------
+
+        if track_history:
+
+            history.append(
+                (
+                    temperature,
+                    gamma,
+                    best_cost
+                )
+            )
+
+        # ----------------------------------------------------
+        # Anneal
+        # ----------------------------------------------------
+
+
+        gamma *= gamma_decay
+        gamma = max(gamma, final_gamma)
+
+    if track_history:
+
+        return best, best_cost, history
+
+    return best, best_cost
+
+#############################################################################
+# NUMBER OF REPLICAS + ITERATIONS PARAMETER TEST
+#############################################################################
+
+num_replicas_values = [6, 8, 10]
+iterations_values = [50, 60, 80, 100]
+
+num_runs = 5
+
+tuning_results = []
+
+
+#############################################################################
+# TEST ALL COMBINATIONS
+#############################################################################
+
+for num_replicas in num_replicas_values:
+
+    for iterations_per_temperature in iterations_values:
+
+        costs = []
+        runtimes = []
+
+        print("\n" + "=" * 80)
+        print(
+            f"Testing replicas={num_replicas}, "
+            f"iterations={iterations_per_temperature}"
+        )
+        print("=" * 80)
+
+        for run in range(num_runs):
+
+            start = time.time()
+
+            best_solution, best_obj = simulated_quantum_annealing(
+
+                num_replicas=num_replicas,
+
+                iterations_per_temperature=iterations_per_temperature,
+
+            )
+            best_cost = total_cost(best_solution)
+            end = time.time()
+
+            costs.append(best_cost)
+            runtimes.append(end - start)
+
+            print(
+                f"  Run {run + 1}: "
+                f"cost={best_cost:.2f}, "
+                f"time={end - start:.2f}s"
+            )
+
+        # ---------------------------------------------------------
+        # Statistics
+        # ---------------------------------------------------------
+
+        mean_cost = np.mean(costs)
+        best_cost = min(costs)
+        std_cost = np.std(costs)
+        mean_runtime = np.mean(runtimes)
+
+        gap = (
+            (mean_cost - OPTIMAL_COST)
+            / OPTIMAL_COST
+        ) * 100
+
+        tuning_results.append({
+
+            "num_replicas": num_replicas,
+
+            "iterations": iterations_per_temperature,
+
+            "mean_cost": mean_cost,
+
+            "best_cost": best_cost,
+
+            "std_cost": std_cost,
+
+            "mean_runtime": mean_runtime,
+
+            "gap": gap
+        })
+
+
+#############################################################################
+# PRINT RESULTS
+#############################################################################
+
+print("\n" + "=" * 100)
+print("REPLICAS + ITERATIONS RESULTS")
+print("=" * 100)
+
+# Sort primarily by mean cost
+tuning_results.sort(
+    key=lambda x: x["mean_cost"]
+)
+
+for result in tuning_results:
+
+    print(
+        f"Replicas={result['num_replicas']:2d} | "
+        f"Iterations={result['iterations']:3d} | "
+        f"Mean={result['mean_cost']:.2f} | "
+        f"Best={result['best_cost']:.2f} | "
+        f"Std={result['std_cost']:.2f} | "
+        f"Gap={result['gap']:.2f}% | "
+        f"Time={result['mean_runtime']:.2f}s"
+    )
+
+
+#############################################################################
+# BEST PARAMETER COMBINATION
+#############################################################################
+
+best_params = tuning_results[0]
+
+print("\n" + "=" * 80)
+print("BEST REPLICAS + ITERATIONS")
+print("=" * 80)
+
+print(
+    "Replicas:",
+    best_params["num_replicas"]
+)
+
+print(
+    "Iterations per temperature:",
+    best_params["iterations"]
+)
+
+print(
+    "Mean cost:",
+    round(best_params["mean_cost"], 2)
+)
+
+print(
+    "Best cost:",
+    round(best_params["best_cost"], 2)
+)
+
+print(
+    "Standard deviation:",
+    round(best_params["std_cost"], 2)
+)
+
+print(
+    "Mean runtime:",
+    round(best_params["mean_runtime"], 3),
+    "seconds"
+)
+
+print(
+    "Gap:",
+    round(best_params["gap"], 2),
+    "%"
+)
