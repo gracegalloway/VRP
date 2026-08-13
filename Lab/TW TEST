@@ -1,0 +1,1783 @@
+import numpy as np
+import random
+import math
+import time
+
+
+random.seed(20)
+np.random.seed(20)
+
+
+# ============================================================
+# PARAMETERS
+# ============================================================
+
+OPTIMAL_DISTANCE = 827.3
+INSTANCE = "Instances/C101.txt"
+
+# Parameters used in the paper
+# Want PT = 0.9
+P = 40
+T = 0.0225
+GAMMA = 3.0
+GAMMA_DECREMENT = 0.0
+
+MC_STEPS = 20_000
+NUM_RUNS = 1
+
+
+# ============================================================
+# SOLOMON INSTANCE
+# ============================================================
+
+with open(INSTANCE, "r") as f:
+
+    lines = [
+        line.strip()
+        for line in f
+        if line.strip()
+    ]
+
+
+# ============================================================
+# VEHICLE CAPACITY
+# ============================================================
+
+capacity_index = None
+
+for i, line in enumerate(lines):
+
+    if "CAPACITY" in line.upper():
+
+        capacity_index = i
+        break
+
+
+if capacity_index is None:
+
+    raise ValueError(
+        "Could not find CAPACITY in instance file."
+    )
+
+
+vehicle_capacity = int(
+    lines[capacity_index + 1].split()[1]
+)
+
+
+# ============================================================
+# CUSTOMER DATA
+# ============================================================
+
+data_start = None
+
+for i, line in enumerate(lines):
+
+    if line.upper().startswith("CUST NO."):
+
+        data_start = i + 1
+        break
+
+
+if data_start is None:
+
+    raise ValueError(
+        "Could not find customer data header."
+    )
+
+
+coordinates = {}
+demands = {}
+ready_time = {}
+due_time = {}
+service_time = {}
+
+
+for line in lines[data_start:]:
+
+    parts = line.split()
+
+    if len(parts) < 7:
+        continue
+
+    try:
+
+        customer = int(parts[0])
+
+        x = float(parts[1])
+        y = float(parts[2])
+
+        demand = int(parts[3])
+
+        ready = float(parts[4])
+        due = float(parts[5])
+
+        service = float(parts[6])
+
+    except ValueError:
+
+        continue
+
+    coordinates[customer] = (x, y)
+
+    demands[customer] = demand
+
+    ready_time[customer] = ready
+    due_time[customer] = due
+    service_time[customer] = service
+
+
+# ============================================================
+# DEPOT / CUSTOMERS
+# ============================================================
+
+DEPOT = 0
+
+customers = [
+    i
+    for i in coordinates
+    if i != DEPOT
+]
+
+n = len(coordinates)
+
+
+# ============================================================
+# DISTANCE MATRIX
+# ============================================================
+
+distance_matrix = np.zeros(
+    (n, n)
+)
+
+
+for i in coordinates:
+
+    for j in coordinates:
+
+        xi, yi = coordinates[i]
+        xj, yj = coordinates[j]
+
+        distance_matrix[i, j] = math.sqrt(
+            (xi - xj) ** 2
+            +
+            (yi - yj) ** 2
+        )
+
+
+# ============================================================
+# ROUTE LOAD
+# ============================================================
+
+def route_load(route):
+
+    return sum(
+        demands[i]
+        for i in route
+    )
+
+
+# ============================================================
+# ROUTE TIME-WINDOW FEASIBILITY
+# ============================================================
+
+def route_feasible(route):
+
+    if not route:
+        return False
+
+    if route_load(route) > vehicle_capacity:
+        return False
+
+    current_time = ready_time[DEPOT]
+
+    previous = DEPOT
+
+    for customer in route:
+
+        arrival_time = (
+            current_time
+            +
+            distance_matrix[
+                previous,
+                customer
+            ]
+        )
+
+        service_start = max(
+            arrival_time,
+            ready_time[customer]
+        )
+
+        if service_start > due_time[customer]:
+
+            return False
+
+        current_time = (
+            service_start
+            +
+            service_time[customer]
+        )
+
+        previous = customer
+
+    return_time = (
+        current_time
+        +
+        distance_matrix[
+            previous,
+            DEPOT
+        ]
+    )
+
+    if return_time > due_time[DEPOT]:
+
+        return False
+
+    return True
+
+
+# ============================================================
+# ROUTE COST
+# ============================================================
+
+def route_cost(route):
+
+    if not route:
+
+        return 0.0
+
+    cost = distance_matrix[
+        DEPOT,
+        route[0]
+    ]
+
+    for i in range(
+        len(route) - 1
+    ):
+
+        cost += distance_matrix[
+            route[i],
+            route[i + 1]
+        ]
+
+    cost += distance_matrix[
+        route[-1],
+        DEPOT
+    ]
+
+    return cost
+
+
+# ============================================================
+# TOTAL DISTANCE
+# ============================================================
+
+def distance_cost(solution):
+
+    return sum(
+        route_cost(route)
+        for route in solution
+    )
+
+
+# ============================================================
+# SOLUTION FEASIBILITY
+# ============================================================
+
+def feasible(solution):
+
+    seen = []
+
+    for route in solution:
+
+        if not route:
+            return False
+
+        if not route_feasible(route):
+            return False
+
+        seen.extend(route)
+
+    return (
+        sorted(seen)
+        ==
+        sorted(customers)
+    )
+
+
+# ============================================================
+# PRIMARY VEHICLE MINIMISATION
+# ============================================================
+
+MAX_DISTANCE = (
+    2.0
+    *
+    sum(
+        distance_matrix[
+            DEPOT,
+            customer
+        ]
+        for customer in customers
+    )
+)
+
+
+VEHICLE_PENALTY = (
+    MAX_DISTANCE + 1.0
+)
+
+
+def objective(solution):
+
+    vehicles = len(solution)
+
+    distance = distance_cost(solution)
+
+    return (
+        vehicles * VEHICLE_PENALTY
+        + distance
+    )
+
+
+# ============================================================
+# COPY SOLUTION
+# ============================================================
+
+def copy_solution(solution):
+
+    return [
+        route.copy()
+        for route in solution
+    ]
+
+
+# ============================================================
+# RANDOM INITIAL SOLUTION
+# ============================================================
+
+def random_initial_solution():
+
+    while True:
+
+        shuffled = customers.copy()
+
+        random.shuffle(shuffled)
+
+        solution = []
+
+        success = True
+
+        for customer in shuffled:
+
+            feasible_insertions = []
+
+            # ------------------------------------------------
+            # Try inserting into existing routes
+            # ------------------------------------------------
+
+            for r, route in enumerate(solution):
+
+                if (
+                    route_load(route)
+                    +
+                    demands[customer]
+                    >
+                    vehicle_capacity
+                ):
+
+                    continue
+
+                for position in range(
+                    len(route) + 1
+                ):
+
+                    candidate_route = (
+                        route.copy()
+                    )
+
+                    candidate_route.insert(
+                        position,
+                        customer
+                    )
+
+                    if route_feasible(
+                        candidate_route
+                    ):
+
+                        feasible_insertions.append(
+                            (r, position)
+                        )
+
+            # ------------------------------------------------
+            # Existing vehicle
+            # ------------------------------------------------
+
+            if feasible_insertions:
+
+                r, position = random.choice(
+                    feasible_insertions
+                )
+
+                solution[r].insert(
+                    position,
+                    customer
+                )
+
+            # ------------------------------------------------
+            # Open new vehicle
+            # ------------------------------------------------
+
+            else:
+
+                new_route = [
+                    customer
+                ]
+
+                if route_feasible(
+                    new_route
+                ):
+
+                    solution.append(
+                        new_route
+                    )
+
+                else:
+
+                    success = False
+                    break
+
+        if (
+            success
+            and
+            feasible(solution)
+        ):
+
+            return solution
+
+
+# ============================================================
+# EDGE REPRESENTATION
+# ============================================================
+
+def solution_to_edges(solution):
+
+    edges = set()
+
+    for route in solution:
+
+        if not route:
+            continue
+
+        previous = DEPOT
+
+        for customer in route:
+
+            edge = tuple(
+                sorted(
+                    (
+                        previous,
+                        customer
+                    )
+                )
+            )
+
+            edges.add(edge)
+
+            previous = customer
+
+        edge = tuple(
+            sorted(
+                (
+                    previous,
+                    DEPOT
+                )
+            )
+        )
+
+        edges.add(edge)
+
+    return edges
+
+
+# ============================================================
+# SPIN PRODUCT
+# ============================================================
+
+def spin_products(
+    edges_previous,
+    edges_current,
+    edges_next
+):
+
+    return (
+        len(
+            edges_previous
+            &
+            edges_current
+        )
+        +
+        len(
+            edges_current
+            &
+            edges_next
+        )
+    )
+
+
+# ============================================================
+# NONEMPTY ROUTES
+# ============================================================
+
+def nonempty_routes(solution):
+
+    return [
+        r
+        for r, route in enumerate(solution)
+        if route
+    ]
+
+
+# ============================================================
+# INSERT MOVE
+# ============================================================
+
+def insert_move(solution):
+
+    new_solution = copy_solution(
+        solution
+    )
+
+    sources = nonempty_routes(
+        new_solution
+    )
+
+    if not sources:
+        return None
+
+    source = random.choice(
+        sources
+    )
+
+    customer = random.choice(
+        new_solution[source]
+    )
+
+    destinations = [
+        r
+        for r in range(
+            len(new_solution)
+        )
+        if r != source
+    ]
+
+    random.shuffle(destinations)
+
+    for destination in destinations:
+
+        destination_route = (
+            new_solution[destination]
+        )
+
+        positions = list(
+            range(
+                len(destination_route) + 1
+            )
+        )
+
+        random.shuffle(positions)
+
+        for position in positions:
+
+            candidate = copy_solution(
+                new_solution
+            )
+
+            candidate[source].remove(
+                customer
+            )
+
+            candidate[destination].insert(
+                position,
+                customer
+            )
+
+            if not candidate[source]:
+
+                del candidate[source]
+
+            if feasible(candidate):
+
+                return candidate
+
+    candidate = copy_solution(
+        new_solution
+    )
+
+    candidate[source].remove(
+        customer
+    )
+
+    if not candidate[source]:
+
+        del candidate[source]
+
+    candidate.append(
+        [customer]
+    )
+
+    if feasible(candidate):
+
+        return candidate
+
+    return None
+
+
+# ============================================================
+# SWAP MOVE
+# ============================================================
+
+def swap_move(solution):
+
+    new_solution = copy_solution(
+        solution
+    )
+
+    routes = nonempty_routes(
+        new_solution
+    )
+
+    if len(routes) < 2:
+        return None
+
+    r1, r2 = random.sample(
+        routes,
+        2
+    )
+
+    i = random.randrange(
+        len(new_solution[r1])
+    )
+
+    j = random.randrange(
+        len(new_solution[r2])
+    )
+
+    c1 = new_solution[r1][i]
+    c2 = new_solution[r2][j]
+
+    load1 = (
+        route_load(new_solution[r1])
+        -
+        demands[c1]
+        +
+        demands[c2]
+    )
+
+    load2 = (
+        route_load(new_solution[r2])
+        -
+        demands[c2]
+        +
+        demands[c1]
+    )
+
+    if (
+        load1 > vehicle_capacity
+        or
+        load2 > vehicle_capacity
+    ):
+
+        return None
+
+    new_solution[r1][i] = c2
+    new_solution[r2][j] = c1
+
+    if feasible(new_solution):
+
+        return new_solution
+
+    return None
+
+
+# ============================================================
+# 2-OPT MOVE
+# ============================================================
+
+def two_opt_move(solution):
+
+    new_solution = copy_solution(
+        solution
+    )
+
+    routes = [
+        r
+        for r in range(
+            len(new_solution)
+        )
+        if len(new_solution[r]) >= 4
+    ]
+
+    if not routes:
+        return None
+
+    r = random.choice(
+        routes
+    )
+
+    route = new_solution[r]
+
+    i, j = sorted(
+        random.sample(
+            range(len(route)),
+            2
+        )
+    )
+
+    route[i:j + 1] = reversed(
+        route[i:j + 1]
+    )
+
+    if feasible(new_solution):
+
+        return new_solution
+
+    return None
+
+
+# ============================================================
+# CROSS MOVE
+# ============================================================
+
+def cross_move(solution):
+
+    new_solution = copy_solution(
+        solution
+    )
+
+    routes = [
+        r
+        for r in range(
+            len(new_solution)
+        )
+        if len(new_solution[r]) >= 2
+    ]
+
+    if len(routes) < 2:
+        return None
+
+    r1, r2 = random.sample(
+        routes,
+        2
+    )
+
+    route1 = new_solution[r1]
+    route2 = new_solution[r2]
+
+    i1, j1 = sorted(
+        random.sample(
+            range(len(route1)),
+            2
+        )
+    )
+
+    i2, j2 = sorted(
+        random.sample(
+            range(len(route2)),
+            2
+        )
+    )
+
+    segment1 = route1[
+        i1:j1 + 1
+    ]
+
+    segment2 = route2[
+        i2:j2 + 1
+    ]
+
+    load1 = (
+        route_load(route1)
+        -
+        sum(
+            demands[x]
+            for x in segment1
+        )
+        +
+        sum(
+            demands[x]
+            for x in segment2
+        )
+    )
+
+    load2 = (
+        route_load(route2)
+        -
+        sum(
+            demands[x]
+            for x in segment2
+        )
+        +
+        sum(
+            demands[x]
+            for x in segment1
+        )
+    )
+
+    if (
+        load1 > vehicle_capacity
+        or
+        load2 > vehicle_capacity
+    ):
+
+        return None
+
+    new_solution[r1] = (
+        route1[:i1]
+        +
+        segment2
+        +
+        route1[j1 + 1:]
+    )
+
+    new_solution[r2] = (
+        route2[:i2]
+        +
+        segment1
+        +
+        route2[j2 + 1:]
+    )
+
+    if feasible(new_solution):
+
+        return new_solution
+
+    return None
+
+
+# ============================================================
+# SCRAMBLE MOVE
+# ============================================================
+
+def scramble_move(solution):
+
+    new_solution = copy_solution(
+        solution
+    )
+
+    routes = [
+        r
+        for r in range(
+            len(new_solution)
+        )
+        if len(new_solution[r]) >= 3
+    ]
+
+    if not routes:
+        return None
+
+    r = random.choice(
+        routes
+    )
+
+    route = new_solution[r]
+
+    i, j = sorted(
+        random.sample(
+            range(len(route)),
+            2
+        )
+    )
+
+    segment = route[
+        i:j + 1
+    ]
+
+    random.shuffle(
+        segment
+    )
+
+    route[i:j + 1] = segment
+
+    if feasible(new_solution):
+
+        return new_solution
+
+    return None
+
+
+# ============================================================
+# STRING INSERT MOVE
+# ============================================================
+
+def string_insert_move(solution):
+
+    new_solution = copy_solution(
+        solution
+    )
+
+    sources = [
+        r
+        for r in range(
+            len(new_solution)
+        )
+        if len(new_solution[r]) >= 2
+    ]
+
+    if not sources:
+        return None
+
+    source = random.choice(
+        sources
+    )
+
+    destinations = [
+        r
+        for r in range(
+            len(new_solution)
+        )
+        if r != source
+    ]
+
+    if not destinations:
+        return None
+
+    destination = random.choice(
+        destinations
+    )
+
+    route = new_solution[source]
+
+    i, j = sorted(
+        random.sample(
+            range(len(route)),
+            2
+        )
+    )
+
+    segment = route[
+        i:j + 1
+    ]
+
+    segment_demand = sum(
+        demands[x]
+        for x in segment
+    )
+
+    if (
+        route_load(
+            new_solution[destination]
+        )
+        +
+        segment_demand
+        >
+        vehicle_capacity
+    ):
+
+        return None
+
+    del route[
+        i:j + 1
+    ]
+
+    position = random.randint(
+        0,
+        len(
+            new_solution[destination]
+        )
+    )
+
+    new_solution[destination][
+        position:position
+    ] = segment
+
+    if not new_solution[source]:
+
+        del new_solution[source]
+
+    if feasible(new_solution):
+
+        return new_solution
+
+    return None
+
+
+# ============================================================
+# 2-OPT* MOVE
+# ============================================================
+
+def two_opt_star_move(solution):
+
+    new_solution = copy_solution(
+        solution
+    )
+
+    routes = [
+        r
+        for r in range(
+            len(new_solution)
+        )
+        if len(new_solution[r]) >= 2
+    ]
+
+    if len(routes) < 2:
+        return None
+
+    r1, r2 = random.sample(
+        routes,
+        2
+    )
+
+    route1 = new_solution[r1]
+    route2 = new_solution[r2]
+
+    cut1 = random.randint(
+        1,
+        len(route1) - 1
+    )
+
+    cut2 = random.randint(
+        1,
+        len(route2) - 1
+    )
+
+    first1 = route1[:cut1]
+    end1 = route1[cut1:]
+
+    first2 = route2[:cut2]
+    end2 = route2[cut2:]
+
+    candidate1 = (
+        first1
+        +
+        end2
+    )
+
+    candidate2 = (
+        first2
+        +
+        end1
+    )
+
+    if (
+        route_load(candidate1)
+        >
+        vehicle_capacity
+        or
+        route_load(candidate2)
+        >
+        vehicle_capacity
+    ):
+
+        return None
+
+    new_solution[r1] = candidate1
+    new_solution[r2] = candidate2
+
+    new_solution = [
+        route
+        for route in new_solution
+        if route
+    ]
+
+    if feasible(new_solution):
+
+        return new_solution
+
+    return None
+
+
+# ============================================================
+# NEIGHBOURHOODS
+# ============================================================
+
+NEIGHBOURS = [
+    insert_move,
+    swap_move,
+    two_opt_move,
+    cross_move,
+    scramble_move,
+    string_insert_move,
+    two_opt_star_move
+]
+
+
+# ============================================================
+# MAKE NEIGHBOUR
+# ============================================================
+
+def make_neighbour(solution):
+
+    for _ in range(10):
+
+        operator = random.choice(
+            NEIGHBOURS
+        )
+
+        candidate = operator(
+            solution
+        )
+
+        if (
+            candidate is not None
+            and
+            feasible(candidate)
+        ):
+
+            return candidate
+
+    return None
+
+
+# ============================================================
+# SIMULATED QUANTUM ANNEALING
+# ============================================================
+
+def qacvrptw(
+    P=40,
+    T=0.0225,
+    gamma=3.0,
+    gamma_decrement=0.0,
+    Mc=20_000
+):
+
+    # --------------------------------------------------------
+    # INITIALISE REPLICAS
+    # --------------------------------------------------------
+
+    replicas = []
+
+    for _ in range(P):
+
+        solution = (
+            random_initial_solution()
+        )
+
+        replicas.append({
+            "solution": solution,
+            "edges": solution_to_edges(
+                solution
+            ),
+            "objective": objective(
+                solution
+            )
+        })
+
+
+    # --------------------------------------------------------
+    # INITIAL BEST
+    # --------------------------------------------------------
+
+    best_replica = min(
+        replicas,
+        key=lambda x: x["objective"]
+    )
+
+    best_solution = copy_solution(
+        best_replica["solution"]
+    )
+
+    best_objective = (
+        best_replica["objective"]
+    )
+
+
+    # --------------------------------------------------------
+    # MONTE CARLO LOOP
+    # --------------------------------------------------------
+
+    for mc in range(Mc):
+
+        x = gamma / (
+            P * T
+        )
+
+        # Coupling strength J
+        #
+        # J = -(T/2) ln(tanh(gamma/(PT)))
+
+        J = -(
+            T / 2.0
+        ) * math.log(
+            math.tanh(x)
+        )
+
+
+        for z in range(P):
+
+            current = replicas[z]
+
+            previous = replicas[
+                (z - 1) % P
+            ]
+
+            next_replica = replicas[
+                (z + 1) % P
+            ]
+
+
+            # ------------------------------------------------
+            # Generate neighbour
+            # ------------------------------------------------
+
+            candidate_solution = (
+                make_neighbour(
+                    current["solution"]
+                )
+            )
+
+            if candidate_solution is None:
+
+                continue
+
+
+            candidate_edges = (
+                solution_to_edges(
+                    candidate_solution
+                )
+            )
+
+            candidate_objective = (
+                objective(
+                    candidate_solution
+                )
+            )
+
+
+            # ------------------------------------------------
+            # Potential energy change
+            # ------------------------------------------------
+
+            delta_H_pot = (
+                candidate_objective
+                -
+                current["objective"]
+            )
+
+
+            # ------------------------------------------------
+            # Kinetic energy change
+            # ------------------------------------------------
+
+            old_spin_product = (
+                spin_products(
+                    previous["edges"],
+                    current["edges"],
+                    next_replica["edges"]
+                )
+            )
+
+            new_spin_product = (
+                spin_products(
+                    previous["edges"],
+                    candidate_edges,
+                    next_replica["edges"]
+                )
+            )
+
+            delta_H_kin = (
+                new_spin_product
+                -
+                old_spin_product
+            )
+
+
+            # ------------------------------------------------
+            # Total Hamiltonian change
+            # ------------------------------------------------
+
+            delta_H = (
+                delta_H_pot / P
+                -
+                J * delta_H_kin
+            )
+
+
+            # ------------------------------------------------
+            # Metropolis acceptance
+            # ------------------------------------------------
+
+            accept = False
+
+            if (
+                delta_H_pot <= 0
+                or
+                delta_H <= 0
+            ):
+
+                accept = True
+
+            else:
+
+                exponent = (
+                    -delta_H / T
+                )
+
+                if exponent > -700:
+
+                    probability = math.exp(
+                        exponent
+                    )
+
+                    if (
+                        random.random()
+                        <
+                        probability
+                    ):
+
+                        accept = True
+
+
+            # ------------------------------------------------
+            # Accept candidate
+            # ------------------------------------------------
+
+            if accept:
+
+                replicas[z]["solution"] = (
+                    candidate_solution
+                )
+
+                replicas[z]["edges"] = (
+                    candidate_edges
+                )
+
+                replicas[z]["objective"] = (
+                    candidate_objective
+                )
+
+
+                # Update global best
+
+                if (
+                    candidate_objective
+                    <
+                    best_objective
+                ):
+
+                    best_objective = (
+                        candidate_objective
+                    )
+
+                    best_solution = (
+                        copy_solution(
+                            candidate_solution
+                        )
+                    )
+
+
+        # ----------------------------------------------------
+        # Gamma schedule
+        # ----------------------------------------------------
+
+        gamma = max(
+            0.0,
+            gamma - gamma_decrement
+        )
+
+
+        # ----------------------------------------------------
+        # Progress
+        # ----------------------------------------------------
+
+        if (
+            (mc + 1)
+            %
+            max(
+                1,
+                Mc // 10
+            )
+            ==
+            0
+        ):
+
+            print(
+                f"MC {mc + 1}/{Mc} | "
+                f"Vehicles = "
+                f"{len(best_solution)} | "
+                f"Distance = "
+                f"{distance_cost(best_solution):.2f} | "
+                f"gamma = "
+                f"{gamma:.4f} | "
+                f"J = "
+                f"{J:.6f}"
+            )
+
+
+    return (
+        best_solution,
+        len(best_solution),
+        distance_cost(best_solution)
+    )
+
+
+# ============================================================
+# SIMULATED ANNEALING
+# SAME OPERATORS AS QACVRPTW
+# ============================================================
+
+def simulated_annealing(
+    initial_solution_func,
+    initial_temp=1000,
+    cooling_rate=0.995,
+    stopping_temp=1e-3,
+    iterations_per_temp=100
+):
+
+    current = initial_solution_func()
+
+    current_objective = objective(current)
+
+    best_solution = copy_solution(current)
+
+    best_objective = current_objective
+
+    T = initial_temp
+
+    while T > stopping_temp:
+
+        for _ in range(iterations_per_temp):
+
+            # SAME seven operators as QACVRPTW
+            operator = random.choice(NEIGHBOURS)
+
+            candidate = operator(current)
+
+            if candidate is None:
+                continue
+
+            candidate_objective = objective(candidate)
+
+            delta = (
+                candidate_objective
+                - current_objective
+            )
+
+            # Metropolis acceptance
+            if delta <= 0:
+
+                current = candidate
+                current_objective = candidate_objective
+
+            else:
+
+                probability = math.exp(
+                    -delta / T
+                )
+
+                if random.random() < probability:
+
+                    current = candidate
+                    current_objective = candidate_objective
+
+            # Update best solution
+            if current_objective < best_objective:
+
+                best_solution = copy_solution(
+                    current
+                )
+
+                best_objective = current_objective
+
+        T *= cooling_rate
+
+    return (
+        best_solution,
+        len(best_solution),
+        distance_cost(best_solution)
+    )
+
+
+# ============================================================
+# RUN SA
+# ============================================================
+
+def run_sa(
+    num_runs=10,
+    initial_temp=1000,
+    cooling_rate=0.995,
+    stopping_temp=1e-3,
+    iterations_per_temp=100
+):
+
+    results = []
+
+    runtimes = []
+
+    print()
+    print("=" * 70)
+    print("SIMULATED ANNEALING")
+    print("=" * 70)
+
+    for run in range(num_runs):
+
+        start = time.time()
+
+        (
+            best_solution,
+            vehicles,
+            distance
+        ) = simulated_annealing(
+            random_initial_solution,
+            initial_temp=initial_temp,
+            cooling_rate=cooling_rate,
+            stopping_temp=stopping_temp,
+            iterations_per_temp=iterations_per_temp
+        )
+
+        elapsed = time.time() - start
+
+        results.append(
+            (
+                vehicles,
+                distance
+            )
+        )
+
+        runtimes.append(elapsed)
+
+        print(
+            f"Run {run + 1}: "
+            f"vehicles={vehicles}, "
+            f"distance={distance:.2f}, "
+            f"time={elapsed:.3f}s"
+        )
+
+    return results, runtimes
+
+
+# ============================================================
+# RUN QACVRPTW
+# ============================================================
+
+def run_qacvrptw(
+    num_runs=10,
+    P=40,
+    T=0.0225,
+    gamma=3.0,
+    gamma_decrement=0.0,
+    Mc=20000
+):
+
+    results = []
+
+    runtimes = []
+
+    print()
+    print("=" * 70)
+    print("QACVRPTW")
+    print("=" * 70)
+
+    for run in range(num_runs):
+
+        start = time.time()
+
+        (
+            best_solution,
+            vehicles,
+            distance
+        ) = qacvrptw(
+            P=P,
+            T=T,
+            gamma=gamma,
+            gamma_decrement=gamma_decrement,
+            Mc=Mc
+        )
+
+        elapsed = time.time() - start
+
+        results.append(
+            (
+                vehicles,
+                distance
+            )
+        )
+
+        runtimes.append(elapsed)
+
+        print(
+            f"Run {run + 1}: "
+            f"vehicles={vehicles}, "
+            f"distance={distance:.2f}, "
+            f"time={elapsed:.3f}s"
+        )
+
+    return results, runtimes
+
+
+# ============================================================
+# SUMMARY
+# ============================================================
+
+def summarise_results(
+    name,
+    results,
+    runtimes
+):
+
+    vehicle_counts = [
+        x[0]
+        for x in results
+    ]
+
+    distances = [
+        x[1]
+        for x in results
+    ]
+
+    mean_vehicles = np.mean(
+        vehicle_counts
+    )
+
+    best_vehicles = min(
+        vehicle_counts
+    )
+
+    mean_distance = np.mean(
+        distances
+    )
+
+    best_distance = min(
+        distances
+    )
+
+    std_distance = np.std(
+        distances
+    )
+
+    mean_runtime = np.mean(
+        runtimes
+    )
+
+    distance_gap = (
+        (
+            mean_distance
+            - OPTIMAL_DISTANCE
+        )
+        /
+        OPTIMAL_DISTANCE
+        *
+        100
+    )
+
+    return {
+        "Algorithm": name,
+        "Mean Vehicles": mean_vehicles,
+        "Best Vehicles": best_vehicles,
+        "Mean Distance": mean_distance,
+        "Best Distance": best_distance,
+        "Std Distance": std_distance,
+        "Mean Runtime": mean_runtime,
+        "Gap (%)": distance_gap
+    }
+
+
+# ============================================================
+# MAIN COMPARISON
+# ============================================================
+
+if __name__ == "__main__":
+
+    NUM_RUNS = 3
+
+    # --------------------------------------------------------
+    # SA parameters
+    # --------------------------------------------------------
+
+    SA_INITIAL_TEMP = 1000
+    SA_COOLING_RATE = 0.995
+    SA_STOPPING_TEMP = 1e-3
+    SA_ITERATIONS = 100
+
+    # --------------------------------------------------------
+    # QACVRPTW parameters
+    # --------------------------------------------------------
+
+    Q_P = 40
+    Q_T = 0.0225
+    Q_GAMMA = 3.0
+    Q_GAMMA_DECREMENT = 0.0
+    Q_MC = 20000
+
+    # --------------------------------------------------------
+    # Run SA
+    # --------------------------------------------------------
+
+    sa_results, sa_runtimes = run_sa(
+        num_runs=NUM_RUNS,
+        initial_temp=SA_INITIAL_TEMP,
+        cooling_rate=SA_COOLING_RATE,
+        stopping_temp=SA_STOPPING_TEMP,
+        iterations_per_temp=SA_ITERATIONS
+    )
+
+    # --------------------------------------------------------
+    # Run QACVRPTW
+    # --------------------------------------------------------
+
+    qa_results, qa_runtimes = run_qacvrptw(
+        num_runs=NUM_RUNS,
+        P=Q_P,
+        T=Q_T,
+        gamma=Q_GAMMA,
+        gamma_decrement=Q_GAMMA_DECREMENT,
+        Mc=Q_MC
+    )
+
+    # --------------------------------------------------------
+    # Summaries
+    # --------------------------------------------------------
+
+    sa_summary = summarise_results(
+        "SA",
+        sa_results,
+        sa_runtimes
+    )
+
+    qa_summary = summarise_results(
+        "QACVRPTW",
+        qa_results,
+        qa_runtimes
+    )
+
+    comparison = [
+        sa_summary,
+        qa_summary
+    ]
+
+    # --------------------------------------------------------
+    # Print comparison
+    # --------------------------------------------------------
+
+    print()
+    print("=" * 90)
+    print("SA vs QACVRPTW")
+    print("=" * 90)
+
+    print(
+        f"{'Algorithm':<15}"
+        f"{'Mean Veh.':<12}"
+        f"{'Best Veh.':<12}"
+        f"{'Mean Dist.':<15}"
+        f"{'Best Dist.':<15}"
+        f"{'Std Dist.':<15}"
+        f"{'Runtime':<15}"
+        f"{'Gap (%)':<10}"
+    )
+
+    print("-" * 90)
+
+    for result in comparison:
+
+        print(
+            f"{result['Algorithm']:<15}"
+            f"{result['Mean Vehicles']:<12.2f}"
+            f"{result['Best Vehicles']:<12}"
+            f"{result['Mean Distance']:<15.2f}"
+            f"{result['Best Distance']:<15.2f}"
+            f"{result['Std Distance']:<15.2f}"
+            f"{result['Mean Runtime']:<15.3f}"
+            f"{result['Gap (%)']:<10.2f}"
+        )
+
+    print("=" * 90)

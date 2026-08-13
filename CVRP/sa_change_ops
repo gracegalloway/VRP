@@ -1,0 +1,1401 @@
+import numpy as np
+import random
+import math
+import time
+import copy
+import vrplib
+
+
+#############################################################################
+# RANDOM SEEDS
+#############################################################################
+
+random.seed(20)
+np.random.seed(20)
+
+
+#############################################################################
+# PARAMETERS
+#############################################################################
+
+INSTANCE = "Instances/E-n76-k8.vrp"
+
+# Parameters used in paper
+# Want PT = 0.9
+
+P = 40
+T = 0.0225
+GAMMA = 3.0
+GAMMA_DECREMENT = 0.0
+
+MC_STEPS = 20_000
+NUM_RUNS = 5
+
+# Known optimal distance
+OPTIMAL_DISTANCE = 735
+
+
+#############################################################################
+# INSTANCE
+#############################################################################
+
+instance = vrplib.read_instance(INSTANCE)
+
+coordinates = {
+    i: tuple(instance["node_coord"][i])
+    for i in range(len(instance["node_coord"]))
+}
+
+demands = {
+    i: int(instance["demand"][i])
+    for i in range(len(instance["demand"]))
+}
+
+vehicle_capacity = int(instance["capacity"])
+
+DEPOT = 0
+
+customers = [
+    i for i in coordinates
+    if i != DEPOT
+]
+
+
+#############################################################################
+# DISTANCE MATRIX
+#############################################################################
+
+n = len(coordinates)
+
+distance_matrix = np.zeros((n, n))
+
+for i in coordinates:
+
+    for j in coordinates:
+
+        xi, yi = coordinates[i]
+        xj, yj = coordinates[j]
+
+        distance_matrix[i, j] = math.sqrt(
+            (xi - xj) ** 2 +
+            (yi - yj) ** 2
+        )
+
+
+#############################################################################
+# ROUTE LOAD
+#############################################################################
+
+def route_load(route):
+
+    return sum(
+        demands[i]
+        for i in route
+    )
+
+
+#############################################################################
+# ROUTE COST
+#############################################################################
+
+def route_cost(route):
+
+    if not route:
+        return 0.0
+
+    cost = distance_matrix[
+        DEPOT,
+        route[0]
+    ]
+
+    for i in range(len(route) - 1):
+
+        cost += distance_matrix[
+            route[i],
+            route[i + 1]
+        ]
+
+    cost += distance_matrix[
+        route[-1],
+        DEPOT
+    ]
+
+    return cost
+
+
+#############################################################################
+# TOTAL DISTANCE
+#############################################################################
+
+def distance_cost(solution):
+
+    return sum(
+        route_cost(route)
+        for route in solution
+    )
+
+
+#############################################################################
+# VEHICLE MINIMISATION OBJECTIVE
+#############################################################################
+
+MAX_DISTANCE = (
+    2.0 *
+    sum(
+        distance_matrix[
+            DEPOT,
+            customer
+        ]
+        for customer in customers
+    )
+)
+
+VEHICLE_PENALTY = (
+    MAX_DISTANCE + 1.0
+)
+
+
+def objective(solution):
+
+    vehicles = len(solution)
+
+    distance = distance_cost(
+        solution
+    )
+
+    return (
+        vehicles * VEHICLE_PENALTY
+        + distance
+    )
+
+
+#############################################################################
+# FEASIBILITY
+#############################################################################
+
+def feasible(solution):
+
+    seen = []
+
+    for route in solution:
+
+        if not route:
+            return False
+
+        if route_load(route) > vehicle_capacity:
+            return False
+
+        seen.extend(route)
+
+    return (
+        sorted(seen)
+        ==
+        sorted(customers)
+    )
+
+
+#############################################################################
+# COPY SOLUTION
+#############################################################################
+
+def copy_solution(solution):
+
+    return [
+        route.copy()
+        for route in solution
+    ]
+
+
+#############################################################################
+# RANDOM INITIAL SOLUTION
+#############################################################################
+
+def random_initial_solution():
+
+    while True:
+
+        shuffled = customers.copy()
+
+        random.shuffle(
+            shuffled
+        )
+
+        solution = []
+
+        success = True
+
+        for customer in shuffled:
+
+            feasible_routes = [
+                r
+                for r, route
+                in enumerate(solution)
+                if (
+                    route_load(route)
+                    + demands[customer]
+                    <= vehicle_capacity
+                )
+            ]
+
+            if feasible_routes:
+
+                r = random.choice(
+                    feasible_routes
+                )
+
+                position = random.randint(
+                    0,
+                    len(solution[r])
+                )
+
+                solution[r].insert(
+                    position,
+                    customer
+                )
+
+            else:
+
+                if demands[customer] > vehicle_capacity:
+
+                    success = False
+                    break
+
+                solution.append(
+                    [customer]
+                )
+
+        if (
+            success
+            and
+            feasible(solution)
+        ):
+
+            return solution
+
+
+#############################################################################
+# SOLUTION -> EDGE REPRESENTATION
+#############################################################################
+
+def solution_to_edges(solution):
+
+    edges = set()
+
+    for route in solution:
+
+        if not route:
+            continue
+
+        previous = DEPOT
+
+        for customer in route:
+
+            edge = tuple(
+                sorted(
+                    (
+                        previous,
+                        customer
+                    )
+                )
+            )
+
+            edges.add(edge)
+
+            previous = customer
+
+        edge = tuple(
+            sorted(
+                (
+                    previous,
+                    DEPOT
+                )
+            )
+        )
+
+        edges.add(edge)
+
+    return edges
+
+
+#############################################################################
+# SPIN PRODUCT
+#############################################################################
+
+def spin_products(
+    edges_previous,
+    edges_current,
+    edges_next
+):
+
+    return (
+        len(
+            edges_previous
+            &
+            edges_current
+        )
+        +
+        len(
+            edges_current
+            &
+            edges_next
+        )
+    )
+
+
+#############################################################################
+# INTER-ROUTE OPERATIONS
+#############################################################################
+
+
+# ===========================================================================
+# 1. INTER-ROUTE RELOCATE
+# ===========================================================================
+
+def inter_relocate(solution):
+
+    sol = copy.deepcopy(solution)
+
+    if len(sol) == 0:
+        return sol
+
+    r1 = random.randrange(
+        len(sol)
+    )
+
+    if len(sol[r1]) == 0:
+        return sol
+
+    c_index = random.randrange(
+        len(sol[r1])
+    )
+
+    customer = sol[r1].pop(
+        c_index
+    )
+
+    if len(sol[r1]) == 0:
+        sol.pop(r1)
+
+    if len(sol) == 0:
+
+        sol.append(
+            [customer]
+        )
+
+        return sol
+
+    r2 = random.randrange(
+        len(sol)
+    )
+
+    if (
+        route_load(sol[r2])
+        + demands[customer]
+        <= vehicle_capacity
+    ):
+
+        position = random.randrange(
+            len(sol[r2]) + 1
+        )
+
+        sol[r2].insert(
+            position,
+            customer
+        )
+
+    else:
+
+        sol.append(
+            [customer]
+        )
+
+    return sol
+
+
+# ===========================================================================
+# 2. INTER-ROUTE SWAP
+# ===========================================================================
+
+def inter_swap(solution):
+
+    sol = copy.deepcopy(solution)
+
+    if len(sol) < 2:
+        return sol
+
+    r1, r2 = random.sample(
+        range(len(sol)),
+        2
+    )
+
+    if (
+        len(sol[r1]) == 0
+        or
+        len(sol[r2]) == 0
+    ):
+        return sol
+
+    i = random.randrange(
+        len(sol[r1])
+    )
+
+    j = random.randrange(
+        len(sol[r2])
+    )
+
+    a = sol[r1][i]
+    b = sol[r2][j]
+
+    load1 = (
+        route_load(sol[r1])
+        - demands[a]
+        + demands[b]
+    )
+
+    load2 = (
+        route_load(sol[r2])
+        - demands[b]
+        + demands[a]
+    )
+
+    if (
+        load1 <= vehicle_capacity
+        and
+        load2 <= vehicle_capacity
+    ):
+
+        sol[r1][i], sol[r2][j] = (
+            sol[r2][j],
+            sol[r1][i]
+        )
+
+    return sol
+
+
+# ===========================================================================
+# 3. INTER-ROUTE 2-OPT*
+# ===========================================================================
+
+def inter_2_opt(solution):
+
+    sol = copy.deepcopy(solution)
+
+    if len(sol) < 2:
+        return sol
+
+    routes = [
+        i
+        for i, route in enumerate(sol)
+        if len(route) >= 2
+    ]
+
+    if len(routes) < 2:
+        return sol
+
+    r1, r2 = random.sample(
+        routes,
+        2
+    )
+
+    route1 = sol[r1]
+    route2 = sol[r2]
+
+    i = random.randrange(
+        1,
+        len(route1)
+    )
+
+    j = random.randrange(
+        1,
+        len(route2)
+    )
+
+    new_route1 = (
+        route1[:i]
+        +
+        route2[j:]
+    )
+
+    new_route2 = (
+        route2[:j]
+        +
+        route1[i:]
+    )
+
+    if (
+        route_load(new_route1)
+        <= vehicle_capacity
+        and
+        route_load(new_route2)
+        <= vehicle_capacity
+    ):
+
+        sol[r1] = new_route1
+        sol[r2] = new_route2
+
+    return sol
+
+
+# ===========================================================================
+# 4. CROSS-EXCHANGE
+# ===========================================================================
+
+def cross_move(solution):
+
+    sol = copy.deepcopy(solution)
+
+    routes = [
+        r
+        for r, route in enumerate(sol)
+        if len(route) >= 2
+    ]
+
+    if len(routes) < 2:
+        return sol
+
+    r1, r2 = random.sample(
+        routes,
+        2
+    )
+
+    route1 = sol[r1]
+    route2 = sol[r2]
+
+    i1, j1 = sorted(
+        random.sample(
+            range(len(route1)),
+            2
+        )
+    )
+
+    i2, j2 = sorted(
+        random.sample(
+            range(len(route2)),
+            2
+        )
+    )
+
+    segment1 = route1[
+        i1:j1 + 1
+    ]
+
+    segment2 = route2[
+        i2:j2 + 1
+    ]
+
+    load1 = (
+        route_load(route1)
+        - sum(
+            demands[x]
+            for x in segment1
+        )
+        + sum(
+            demands[x]
+            for x in segment2
+        )
+    )
+
+    load2 = (
+        route_load(route2)
+        - sum(
+            demands[x]
+            for x in segment2
+        )
+        + sum(
+            demands[x]
+            for x in segment1
+        )
+    )
+
+    if (
+        load1 <= vehicle_capacity
+        and
+        load2 <= vehicle_capacity
+    ):
+
+        sol[r1] = (
+            route1[:i1]
+            +
+            segment2
+            +
+            route1[j1 + 1:]
+        )
+
+        sol[r2] = (
+            route2[:i2]
+            +
+            segment1
+            +
+            route2[j2 + 1:]
+        )
+
+    return sol
+
+
+# ===========================================================================
+# 5. STRING INSERTION
+# ===========================================================================
+
+def string_insert_move(solution):
+
+    sol = copy.deepcopy(solution)
+
+    sources = [
+        r
+        for r, route in enumerate(sol)
+        if len(route) >= 2
+    ]
+
+    if not sources:
+        return sol
+
+    source = random.choice(
+        sources
+    )
+
+    destinations = [
+        r
+        for r in range(len(sol))
+        if r != source
+    ]
+
+    if not destinations:
+        return sol
+
+    destination = random.choice(
+        destinations
+    )
+
+    route = sol[source]
+
+    i, j = sorted(
+        random.sample(
+            range(len(route)),
+            2
+        )
+    )
+
+    segment = route[
+        i:j + 1
+    ]
+
+    segment_demand = sum(
+        demands[x]
+        for x in segment
+    )
+
+    if (
+        route_load(sol[destination])
+        + segment_demand
+        > vehicle_capacity
+    ):
+        return sol
+
+    del route[
+        i:j + 1
+    ]
+
+    position = random.randrange(
+        len(sol[destination]) + 1
+    )
+
+    sol[destination][
+        position:position
+    ] = segment
+
+    if not sol[source]:
+        del sol[source]
+
+    return sol
+
+
+#############################################################################
+# INTRA-ROUTE OPERATIONS
+#############################################################################
+
+
+# ===========================================================================
+# 6. INTRA-ROUTE RELOCATE
+# ===========================================================================
+
+def intra_relocate(solution):
+
+    sol = copy.deepcopy(solution)
+
+    if len(sol) == 0:
+        return sol
+
+    r = random.randrange(
+        len(sol)
+    )
+
+    if len(sol[r]) == 0:
+        return sol
+
+    c_index = random.randrange(
+        len(sol[r])
+    )
+
+    customer = sol[r].pop(
+        c_index
+    )
+
+    new_position = random.randrange(
+        len(sol[r]) + 1
+    )
+
+    sol[r].insert(
+        new_position,
+        customer
+    )
+
+    return sol
+
+
+# ===========================================================================
+# 7. INTRA-ROUTE 2-OPT
+# ===========================================================================
+
+def intra_2_opt(solution):
+
+    sol = copy.deepcopy(solution)
+
+    routes = [
+        r
+        for r, route in enumerate(sol)
+        if len(route) >= 4
+    ]
+
+    if not routes:
+        return sol
+
+    r = random.choice(
+        routes
+    )
+
+    route = sol[r]
+
+    i, j = sorted(
+        random.sample(
+            range(len(route)),
+            2
+        )
+    )
+
+    if j - i < 2:
+        return sol
+
+    route[i:j + 1] = reversed(
+        route[i:j + 1]
+    )
+
+    sol[r] = route
+
+    return sol
+
+
+#############################################################################
+# SEVEN OPERATORS
+#############################################################################
+
+NEIGHBOURS = [
+
+    inter_relocate,      # 1
+    inter_swap,          # 2
+    inter_2_opt,         # 3
+    cross_move,          # 4
+    string_insert_move,  # 5
+    intra_relocate,      # 6
+    intra_2_opt          # 7
+]
+
+
+#############################################################################
+# WEIGHTED NEIGHBOUR SELECTION
+#############################################################################
+
+def random_neighbour(
+    solution,
+    weights
+):
+
+    operator = random.choices(
+        NEIGHBOURS,
+        weights=weights,
+        k=1
+    )[0]
+
+    return operator(
+        solution
+    )
+
+
+#############################################################################
+# FEASIBLE NEIGHBOUR
+#############################################################################
+
+def make_neighbour(
+    solution,
+    weights
+):
+
+    for _ in range(10):
+
+        candidate = random_neighbour(
+            solution,
+            weights
+        )
+
+        if (
+            candidate is not None
+            and
+            feasible(candidate)
+        ):
+
+            return candidate
+
+    return None
+
+
+#############################################################################
+# SIMULATED QUANTUM ANNEALING
+#############################################################################
+
+def qacvrp(
+    P=40,
+    T=0.0225,
+    gamma=3.0,
+    gamma_decrement=0.0,
+    Mc=20_000,
+    weights=None
+):
+
+    #########################################################################
+    # OPERATOR WEIGHTS
+    #########################################################################
+
+    if weights is None:
+
+        weights = [
+            1,  # inter-relocate
+            1,  # inter-swap
+            1,  # inter-2-opt
+            1,  # cross-exchange
+            1,  # string insertion
+            1,  # intra-relocate
+            1   # intra-2-opt
+        ]
+
+    if len(weights) != len(NEIGHBOURS):
+
+        raise ValueError(
+            "There must be exactly 7 operator weights."
+        )
+
+    #########################################################################
+    # INITIALISE P REPLICAS
+    #########################################################################
+
+    replicas = []
+
+    for _ in range(P):
+
+        solution = (
+            random_initial_solution()
+        )
+
+        replicas.append(
+            {
+                "solution": solution,
+
+                "edges":
+                    solution_to_edges(
+                        solution
+                    ),
+
+                "objective":
+                    objective(
+                        solution
+                    )
+            }
+        )
+
+    #########################################################################
+    # INITIAL BEST
+    #########################################################################
+
+    best_replica = min(
+        replicas,
+        key=lambda x: x["objective"]
+    )
+
+    best_solution = copy_solution(
+        best_replica["solution"]
+    )
+
+    best_objective = (
+        best_replica["objective"]
+    )
+
+    #########################################################################
+    # MONTE CARLO LOOP
+    #########################################################################
+
+    for mc in range(Mc):
+
+        #####################################################################
+        # COUPLING
+        #####################################################################
+
+        x = gamma / (
+            P * T
+        )
+
+        if x <= 0:
+
+            J = 0.0
+
+        else:
+
+            J = -(
+                T / 2.0
+            ) * math.log(
+                math.tanh(x)
+            )
+
+        #####################################################################
+        # UPDATE EACH REPLICA
+        #####################################################################
+
+        for z in range(P):
+
+            current = replicas[z]
+
+            previous = replicas[
+                (z - 1) % P
+            ]
+
+            next_replica = replicas[
+                (z + 1) % P
+            ]
+
+            #################################################################
+            # GENERATE NEIGHBOUR
+            #################################################################
+
+            candidate_solution = (
+                make_neighbour(
+                    current["solution"],
+                    weights
+                )
+            )
+
+            if candidate_solution is None:
+                continue
+
+            #################################################################
+            # REPRESENTATION
+            #################################################################
+
+            candidate_edges = (
+                solution_to_edges(
+                    candidate_solution
+                )
+            )
+
+            candidate_objective = (
+                objective(
+                    candidate_solution
+                )
+            )
+
+            #################################################################
+            # POTENTIAL ENERGY
+            #################################################################
+
+            delta_H_pot = (
+                candidate_objective
+                -
+                current["objective"]
+            )
+
+            #################################################################
+            # SPIN COUPLING
+            #################################################################
+
+            old_spin_product = (
+                spin_products(
+                    previous["edges"],
+                    current["edges"],
+                    next_replica["edges"]
+                )
+            )
+
+            new_spin_product = (
+                spin_products(
+                    previous["edges"],
+                    candidate_edges,
+                    next_replica["edges"]
+                )
+            )
+
+            #################################################################
+            # KINETIC ENERGY
+            #################################################################
+
+            delta_H_kin = (
+                new_spin_product
+                -
+                old_spin_product
+            )
+
+            #################################################################
+            # TOTAL HAMILTONIAN
+            #################################################################
+
+            delta_H = (
+                delta_H_pot / P
+                -
+                J * delta_H_kin
+            )
+
+            #################################################################
+            # ACCEPTANCE
+            #################################################################
+
+            accept = False
+
+            if (
+                delta_H_pot <= 0
+                or
+                delta_H <= 0
+            ):
+
+                accept = True
+
+            else:
+
+                exponent = (
+                    -delta_H / T
+                )
+
+                if exponent > -700:
+
+                    probability = math.exp(
+                        exponent
+                    )
+
+                    if (
+                        random.random()
+                        < probability
+                    ):
+
+                        accept = True
+
+            #################################################################
+            # ACCEPT CANDIDATE
+            #################################################################
+
+            if accept:
+
+                replicas[z]["solution"] = (
+                    candidate_solution
+                )
+
+                replicas[z]["edges"] = (
+                    candidate_edges
+                )
+
+                replicas[z]["objective"] = (
+                    candidate_objective
+                )
+
+                #################################################################
+                # GLOBAL BEST
+                #################################################################
+
+                if (
+                    candidate_objective
+                    < best_objective
+                ):
+
+                    best_objective = (
+                        candidate_objective
+                    )
+
+                    best_solution = (
+                        copy_solution(
+                            candidate_solution
+                        )
+                    )
+
+        #####################################################################
+        # GAMMA UPDATE
+        #####################################################################
+
+        gamma = max(
+            0.0,
+            gamma - gamma_decrement
+        )
+
+        #####################################################################
+        # PROGRESS
+        #####################################################################
+
+        if (
+            (mc + 1)
+            % max(1, Mc // 10)
+            == 0
+        ):
+
+            print(
+                f"MC {mc + 1}/{Mc} | "
+                f"Vehicles = "
+                f"{len(best_solution)} | "
+                f"Distance = "
+                f"{distance_cost(best_solution):.2f} | "
+                f"gamma = "
+                f"{gamma:.4f} | "
+                f"J = "
+                f"{J:.6f}"
+            )
+
+    #########################################################################
+    # RETURN
+    #########################################################################
+
+    return (
+        best_solution,
+        len(best_solution),
+        distance_cost(best_solution)
+    )
+
+
+#############################################################################
+# MULTIPLE RUNS
+#############################################################################
+
+if __name__ == "__main__":
+
+    print("=" * 70)
+
+    print(
+        "QACVRP - Seven Operator Version"
+    )
+
+    print("=" * 70)
+
+    print(
+        f"Instance = {INSTANCE}"
+    )
+
+    print(
+        f"P = {P}"
+    )
+
+    print(
+        f"T = {T}"
+    )
+
+    print(
+        f"PT = {P * T:.4f}"
+    )
+
+    print(
+        f"gamma = {GAMMA}"
+    )
+
+    print(
+        f"gamma decrement = "
+        f"{GAMMA_DECREMENT}"
+    )
+
+    print(
+        f"Monte Carlo steps = "
+        f"{MC_STEPS}"
+    )
+
+    print(
+        f"Runs = {NUM_RUNS}"
+    )
+
+    print(
+        f"Vehicle penalty = "
+        f"{VEHICLE_PENALTY:.2f}"
+    )
+
+    print()
+
+    #########################################################################
+    # RESULTS
+    #########################################################################
+
+    results = []
+    runtimes = []
+
+    for run in range(NUM_RUNS):
+
+        print(
+            f"\n{'-' * 70}"
+        )
+
+        print(
+            f"RUN {run + 1}"
+        )
+
+        print(
+            f"{'-' * 70}"
+        )
+
+        start = time.time()
+
+        #####################################################################
+        # EQUAL WEIGHTS FOR ALL 7 OPERATORS
+        #####################################################################
+
+        weights = [
+            1,  # inter-relocate
+            1,  # inter-swap
+            1,  # inter-2-opt
+            1,  # cross-exchange
+            1,  # string insertion
+            1,  # intra-relocate
+            1   # intra-2-opt
+        ]
+
+        (
+            best_solution,
+            vehicles,
+            distance
+        ) = qacvrp(
+            P=P,
+            T=T,
+            gamma=GAMMA,
+            gamma_decrement=GAMMA_DECREMENT,
+            Mc=MC_STEPS,
+            weights=weights
+        )
+
+        elapsed = (
+            time.time()
+            - start
+        )
+
+        results.append(
+            (
+                vehicles,
+                distance
+            )
+        )
+
+        runtimes.append(
+            elapsed
+        )
+
+        print()
+
+        print(
+            f"Run {run + 1}: "
+            f"vehicles = {vehicles}, "
+            f"distance = {distance:.2f}, "
+            f"runtime = {elapsed:.3f}s"
+        )
+
+    #########################################################################
+    # SUMMARY
+    #########################################################################
+
+    vehicle_counts = [
+        x[0]
+        for x in results
+    ]
+
+    distances = [
+        x[1]
+        for x in results
+    ]
+
+    mean_vehicles = np.mean(
+        vehicle_counts
+    )
+
+    best_vehicles = min(
+        vehicle_counts
+    )
+
+    mean_distance = np.mean(
+        distances
+    )
+
+    best_distance = min(
+        distances
+    )
+
+    std_distance = np.std(
+        distances
+    )
+
+    mean_runtime = np.mean(
+        runtimes
+    )
+
+    distance_gap = (
+        (
+            mean_distance
+            -
+            OPTIMAL_DISTANCE
+        )
+        /
+        OPTIMAL_DISTANCE
+    ) * 100
+
+    #########################################################################
+    # FINAL RESULTS
+    #########################################################################
+
+    print()
+
+    print("=" * 70)
+
+    print(
+        "FINAL RESULTS"
+    )
+
+    print("=" * 70)
+
+    print(
+        f"Mean vehicles: "
+        f"{mean_vehicles:.2f}"
+    )
+
+    print(
+        f"Best vehicles: "
+        f"{best_vehicles}"
+    )
+
+    print(
+        f"Mean distance: "
+        f"{mean_distance:.2f}"
+    )
+
+    print(
+        f"Best distance: "
+        f"{best_distance:.2f}"
+    )
+
+    print(
+        f"Std distance: "
+        f"{std_distance:.2f}"
+    )
+
+    print(
+        f"Mean runtime: "
+        f"{mean_runtime:.3f} seconds"
+    )
+
+    print(
+        f"Distance gap: "
+        f"{distance_gap:.2f}%"
+    )
+
+    print("=" * 70)

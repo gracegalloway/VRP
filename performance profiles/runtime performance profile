@@ -1,0 +1,160 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# ============================================================
+# DATA
+# ============================================================
+
+data = {
+    "Instance": [
+        "E-n76-k8", "P-n23-k8", "B-n50-k8", "A-n33-k5",
+        "B-n35-k5", "B-n66-k9", "P-n19-k2", "B-n38-k6",
+        "E-n101-k8", "A-n37-k6", "A-n64-k9", "B-n41-k6",
+        "B-n31-k5", "A-n45-k7", "E-n23-k3", "E-n76-k14",
+        "P-n20-k2", "P-n40-k5", "P-n50-k10", "P-n60-k15",
+        "P-n70-k10", "E-n33-k4", "B-n68-k9", "A-n63-k10",
+        "A-n39-k6", "P-n16-k8", "B-n43-k6", "M-n101-k10",
+        "A-n53-k7", "E-n76-k10", "P-n60-k10", "E-n22-k4",
+        "P-n76-k5", "B-n64-k9", "A-n32-k5", "A-n36-k5",
+        "B-n45-k6", "B-n78-k10", "P-n50-k8", "E-n30-k3"
+    ],
+
+    "SA": [
+        7.883, 6.459, 6.939, 5.991, 5.652,
+        8.095, 4.567, 5.521, 8.740, 6.851,
+        7.706, 6.825, 5.531, 7.063, 4.994,
+        10.417, 5.192, 6.097, 8.167, 8.816,
+        8.194, 5.681, 8.477, 9.903, 5.913,
+        5.998, 5.946, 9.014, 7.076, 8.504,
+        7.792, 4.452, 8.321, 8.676, 5.711,
+        6.176, 6.654, 9.478, 7.657, 5.716
+    ],
+
+    "ALNS": [
+        10.214, 0.261, 1.985, 0.684, 0.945,
+        4.825, 0.253, 0.971, 20.034, 1.106,
+        3.803, 1.799, 1.013, 2.068, 0.410,
+        4.368, 0.214, 1.853, 2.020, 2.220,
+        5.236, 0.955, 4.356, 3.253, 1.067,
+        0.171, 1.521, 15.495, 2.453, 6.315,
+        3.163, 0.359, 10.630, 4.162, 1.013,
+        1.110, 1.407, 8.665, 2.757, 0.719
+    ],
+
+    "GA": [
+        3.056, 0.795, 1.780, 1.032, 1.151,
+        2.647, 0.527, 1.218, 4.793, 1.366,
+        2.950, 1.452, 1.083, 1.658, 0.808,
+        3.861, 0.648, 1.364, 1.372, 2.714,
+        2.797, 1.063, 3.118, 2.606, 1.323,
+        0.590, 1.410, 4.584, 1.956, 3.141,
+        2.374, 0.774, 3.420, 2.750, 1.081,
+        1.270, 1.597, 3.767, 1.910, 1.006
+    ],
+
+    "QA": [
+        57.764, 33.751, 44.012, 33.251, 34.586,
+        53.534, 23.856, 35.285, 66.680, 41.542,
+        57.150, 42.616, 33.357, 44.524, 28.828,
+        71.866, 26.914, 39.541, 53.096, 58.380,
+        57.763, 32.677, 60.493, 54.049, 38.571,
+        29.782, 39.449, 69.794, 46.404, 62.747,
+        52.716, 29.248, 62.158, 58.138, 37.654,
+        38.411, 44.604, 68.349, 50.159, 33.291
+    ]
+}
+
+df = pd.DataFrame(data)
+
+# ============================================================
+# PERFORMANCE RATIOS
+# ============================================================
+
+algorithms = ["SA", "ALNS", "GA", "QA"]
+
+# Best runtime for each problem
+best_runtime = df[algorithms].min(axis=1)
+
+# Performance ratio:
+# runtime of algorithm / best runtime for that problem
+ratios = df[algorithms].div(best_runtime, axis=0)
+
+# ============================================================
+# PERFORMANCE PROFILE
+# ============================================================
+
+n_problems = len(df)
+
+plt.figure(figsize=(8, 6))
+
+for algorithm in algorithms:
+
+    # Sort performance ratios
+    r = np.sort(ratios[algorithm].values)
+
+    # Cumulative proportion of problems
+    rho = np.arange(1, n_problems + 1) / n_problems
+
+    # Add starting point
+    x = np.insert(r, 0, 1)
+    y = np.insert(rho, 0, 0)
+
+    # Step function
+    plt.step(
+        x,
+        y,
+        where="post",
+        label=algorithm
+    )
+
+# ============================================================
+# PLOT SETTINGS
+# ============================================================
+
+
+plt.xlabel(r"$\tau$ (factor of best runtime)")
+plt.ylabel(r"$\rho_s(\tau)$")
+
+plt.ylim(0, 1.02)
+
+plt.grid(
+    True,
+    which="both",
+    alpha=0.25
+)
+
+plt.legend()
+
+plt.tight_layout()
+
+# ============================================================
+# SAVE FIGURE
+# ============================================================
+
+plt.savefig(
+    "runtime_performance_profile_no_log.png",
+    dpi=300,
+    bbox_inches="tight"
+)
+
+plt.show()
+
+# ============================================================
+# PRINT RESULTS
+# ============================================================
+
+print("Number of problem instances:", n_problems)
+
+print("\nPerformance ratios:")
+print(ratios.round(3))
+
+print("\nProportion of problems where each algorithm is fastest:")
+
+for algorithm in algorithms:
+    proportion = (ratios[algorithm] == 1).mean()
+    print(
+        f"{algorithm}: "
+        f"{proportion:.2f} "
+        f"({proportion * 100:.1f}%)"
+    )

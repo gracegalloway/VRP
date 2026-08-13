@@ -5,32 +5,26 @@ import time
 import vrplib
 
 
-# ============================================================
-# SETTINGS
-# ============================================================
-
 random.seed(20)
 np.random.seed(20)
 
-INSTANCE = "Instances/B-n35-k5.vrp"
+INSTANCE = "Instances/B-n33-k5.vrp"
 
-# Crispin & Syrichas parameters
+#parameters used in paper (want PT=0.9)
 P = 40
 T = 0.0225
 GAMMA = 3.0
 GAMMA_DECREMENT = 0.0
 
-# Use 10,000 initially.
-# Paper uses 5,000,000.
 MC_STEPS = 20_000
-
 NUM_RUNS = 5
 
-OPTIMAL_COST = 955
+# Known optimal distance
+OPTIMAL_DISTANCE = 955
 
 
 # ============================================================
-# LOAD INSTANCE
+# INSTANCE
 # ============================================================
 
 instance = vrplib.read_instance(INSTANCE)
@@ -54,9 +48,6 @@ customers = [
     if i != DEPOT
 ]
 
-# E-n76-k8
-NUM_VEHICLES = 8
-
 
 # ============================================================
 # DISTANCE MATRIX
@@ -68,6 +59,7 @@ distance_matrix = np.zeros((n, n))
 
 for i in coordinates:
     for j in coordinates:
+
         xi, yi = coordinates[i]
         xj, yj = coordinates[j]
 
@@ -77,12 +69,13 @@ for i in coordinates:
         )
 
 
-# ============================================================
-# ROUTE FUNCTIONS
-# ============================================================
-
+# primary vechile minimisation objective
 def route_load(route):
-    return sum(demands[i] for i in route)
+
+    return sum(
+        demands[i]
+        for i in route
+    )
 
 
 def route_cost(route):
@@ -96,6 +89,7 @@ def route_cost(route):
     ]
 
     for i in range(len(route) - 1):
+
         cost += distance_matrix[
             route[i],
             route[i + 1]
@@ -109,18 +103,44 @@ def route_cost(route):
     return cost
 
 
-def solution_cost(solution):
+def distance_cost(solution):
+
     return sum(
         route_cost(route)
         for route in solution
     )
 
 
+
+# upper bound on distance
+MAX_DISTANCE = 2.0 * sum(
+    distance_matrix[DEPOT, customer]
+    for customer in customers
+)
+
+# fewer vechiles better
+VEHICLE_PENALTY = MAX_DISTANCE + 1.0
+
+
+def objective(solution):
+
+    vehicles = len(solution)
+    distance = distance_cost(solution)
+
+    return (
+        vehicles * VEHICLE_PENALTY
+        + distance
+    )
+
+# check solution is feasible
 def feasible(solution):
 
     seen = []
 
     for route in solution:
+
+        if not route:
+            return False
 
         if route_load(route) > vehicle_capacity:
             return False
@@ -130,15 +150,8 @@ def feasible(solution):
     return sorted(seen) == sorted(customers)
 
 
-# ============================================================
-# FAST COPY
-# ============================================================
-
+# create copies of solution
 def copy_solution(solution):
-    """
-    Much faster than copy.deepcopy() because our solution
-    only contains lists of integers.
-    """
 
     return [
         route.copy()
@@ -146,9 +159,7 @@ def copy_solution(solution):
     ]
 
 
-# ============================================================
-# RANDOM INITIAL SOLUTION
-# ============================================================
+# random intial solution
 
 def random_initial_solution():
 
@@ -157,10 +168,7 @@ def random_initial_solution():
         shuffled = customers.copy()
         random.shuffle(shuffled)
 
-        solution = [
-            []
-            for _ in range(NUM_VEHICLES)
-        ]
+        solution = []
 
         success = True
 
@@ -168,47 +176,52 @@ def random_initial_solution():
 
             feasible_routes = [
                 r
-                for r in range(NUM_VEHICLES)
+                for r, route in enumerate(solution)
                 if (
-                    route_load(solution[r])
+                    route_load(route)
                     + demands[customer]
                     <= vehicle_capacity
                 )
             ]
 
-            if not feasible_routes:
-                success = False
-                break
+            # Either insert into an existing vehicle
+            # or open a new vehicle.
 
-            r = random.choice(feasible_routes)
+            if feasible_routes:
 
-            position = random.randint(
-                0,
-                len(solution[r])
-            )
+                r = random.choice(
+                    feasible_routes
+                )
 
-            solution[r].insert(
-                position,
-                customer
-            )
+                position = random.randint(
+                    0,
+                    len(solution[r])
+                )
 
-        if success:
+                solution[r].insert(
+                    position,
+                    customer
+                )
+
+            else:
+
+                # new route
+                if demands[customer] > vehicle_capacity:
+                    success = False
+                    break
+
+                solution.append(
+                    [customer]
+                )
+
+        if success and feasible(solution):
+
             return solution
 
 
-# ============================================================
-# SPIN REPRESENTATION
-# ============================================================
+# use edges as spin representation (1 if used, 0 if not)
 
 def solution_to_edges(solution):
-    """
-    The paper uses a symmetric spin/connectivity matrix.
-
-    Instead of storing the full NxN matrix, we store the
-    non-zero upper-triangular entries as a set of edges.
-
-    This is mathematically equivalent for SpinProducts().
-    """
 
     edges = set()
 
@@ -222,16 +235,20 @@ def solution_to_edges(solution):
         for customer in route:
 
             edge = tuple(
-                sorted((previous, customer))
+                sorted(
+                    (previous, customer)
+                )
             )
 
             edges.add(edge)
 
             previous = customer
 
-        # Return to depot
+        # spin matrix symmetric
         edge = tuple(
-            sorted((previous, DEPOT))
+            sorted(
+                (previous, DEPOT)
+            )
         )
 
         edges.add(edge)
@@ -239,26 +256,14 @@ def solution_to_edges(solution):
     return edges
 
 
-# ============================================================
-# SPIN PRODUCTS
-# ============================================================
+# spin product (number of shared edges between replica and its neighbours)
+# way to quantify similarity between solutions
 
 def spin_products(
     edges_previous,
     edges_current,
     edges_next
 ):
-    """
-    Equivalent to:
-
-    Sum S_previous * S_current
-    +
-    Sum S_current * S_next
-
-    over i < j.
-
-    Set intersection gives the number of shared connections.
-    """
 
     return (
         len(
@@ -273,10 +278,8 @@ def spin_products(
     )
 
 
-# ============================================================
-# NEIGHBOURHOOD OPERATORS
-# ============================================================
 
+# find nonempty routes
 def nonempty_routes(solution):
 
     return [
@@ -286,10 +289,8 @@ def nonempty_routes(solution):
     ]
 
 
-# ------------------------------------------------------------
-# INSERT
-# ------------------------------------------------------------
-
+# inter-route relocate
+# take node out of route and insert in a new route
 def insert_move(solution):
 
     new_solution = copy_solution(solution)
@@ -305,9 +306,10 @@ def insert_move(solution):
         new_solution[source]
     )
 
+    # Existing routes
     destinations = [
         r
-        for r in range(NUM_VEHICLES)
+        for r in range(len(new_solution))
         if r != source
     ]
 
@@ -335,15 +337,26 @@ def insert_move(solution):
                 customer
             )
 
+            # Remove empty source route.
+            if not new_solution[source]:
+
+                del new_solution[source]
+
             return new_solution
 
-    return None
+    # allow to create  a new route
+    new_solution[source].remove(customer)
+
+    new_solution.append([customer])
+
+    if not new_solution[source]:
+        del new_solution[source]
+
+    return new_solution
 
 
-# ------------------------------------------------------------
-# SWAP
-# ------------------------------------------------------------
-
+# inter-route swap move
+# take two nodes from two routes and swap them
 def swap_move(solution):
 
     new_solution = copy_solution(solution)
@@ -392,17 +405,15 @@ def swap_move(solution):
     return None
 
 
-# ------------------------------------------------------------
-# 2-OPT
-# ------------------------------------------------------------
-
+# intra-route 2-opt
+# select 2 nodes in a route and reverse section between them
 def two_opt_move(solution):
 
     new_solution = copy_solution(solution)
 
     routes = [
         r
-        for r in range(NUM_VEHICLES)
+        for r in range(len(new_solution))
         if len(new_solution[r]) >= 4
     ]
 
@@ -427,17 +438,14 @@ def two_opt_move(solution):
     return new_solution
 
 
-# ------------------------------------------------------------
-# CROSS
-# ------------------------------------------------------------
-
+#  swap whole sections between two routes
 def cross_move(solution):
 
     new_solution = copy_solution(solution)
 
     routes = [
         r
-        for r in range(NUM_VEHICLES)
+        for r in range(len(new_solution))
         if len(new_solution[r]) >= 2
     ]
 
@@ -463,13 +471,8 @@ def cross_move(solution):
         )
     )
 
-    segment1 = route1[
-        i1:j1 + 1
-    ]
-
-    segment2 = route2[
-        i2:j2 + 1
-    ]
+    segment1 = route1[i1:j1 + 1]
+    segment2 = route2[i2:j2 + 1]
 
     load1 = (
         route_load(route1)
@@ -506,17 +509,15 @@ def cross_move(solution):
     return None
 
 
-# ------------------------------------------------------------
-# SCRAMBLE
-# ------------------------------------------------------------
-
+# intra-route scramble move
+# select segment of one route and scramble it, keeping it in same route
 def scramble_move(solution):
 
     new_solution = copy_solution(solution)
 
     routes = [
         r
-        for r in range(NUM_VEHICLES)
+        for r in range(len(new_solution))
         if len(new_solution[r]) >= 3
     ]
 
@@ -534,30 +535,23 @@ def scramble_move(solution):
         )
     )
 
-    segment = route[
-        i:j + 1
-    ]
+    segment = route[i:j + 1]
 
     random.shuffle(segment)
 
-    route[
-        i:j + 1
-    ] = segment
+    route[i:j + 1] = segment
 
     return new_solution
 
 
-# ------------------------------------------------------------
-# STRING INSERT
-# ------------------------------------------------------------
-
+# inserts continious string of nodes in one route into another
 def string_insert_move(solution):
 
     new_solution = copy_solution(solution)
 
     sources = [
         r
-        for r in range(NUM_VEHICLES)
+        for r in range(len(new_solution))
         if len(new_solution[r]) >= 2
     ]
 
@@ -568,7 +562,7 @@ def string_insert_move(solution):
 
     destinations = [
         r
-        for r in range(NUM_VEHICLES)
+        for r in range(len(new_solution))
         if r != source
     ]
 
@@ -588,9 +582,7 @@ def string_insert_move(solution):
         )
     )
 
-    segment = route[
-        i:j + 1
-    ]
+    segment = route[i:j + 1]
 
     segment_demand = sum(
         demands[x]
@@ -606,9 +598,7 @@ def string_insert_move(solution):
     ):
         return None
 
-    del route[
-        i:j + 1
-    ]
+    del route[i:j + 1]
 
     position = random.randint(
         0,
@@ -619,20 +609,22 @@ def string_insert_move(solution):
         position:position
     ] = segment
 
+    # Remove empty route.
+    if not new_solution[source]:
+
+        del new_solution[source]
+
     return new_solution
 
 
-# ------------------------------------------------------------
-# 2-OPT-STAR
-# ------------------------------------------------------------
-
+# exchange the tails of two routes
 def two_opt_star_move(solution):
 
     new_solution = copy_solution(solution)
 
     routes = [
         r
-        for r in range(NUM_VEHICLES)
+        for r in range(len(new_solution))
         if len(new_solution[r]) >= 2
     ]
 
@@ -674,15 +666,19 @@ def two_opt_star_move(solution):
         new_solution[r1] = candidate1
         new_solution[r2] = candidate2
 
+        # Remove empty routes if produced.
+        new_solution = [
+            route
+            for route in new_solution
+            if route
+        ]
+
         return new_solution
 
     return None
 
 
-# ============================================================
-# OPERATOR LIST
-# ============================================================
-
+# operators
 NEIGHBOURS = [
     insert_move,
     swap_move,
@@ -693,7 +689,7 @@ NEIGHBOURS = [
     two_opt_star_move
 ]
 
-
+# perturb solution and check feasibility of new solution
 def make_neighbour(solution):
 
     for _ in range(10):
@@ -704,16 +700,17 @@ def make_neighbour(solution):
 
         candidate = operator(solution)
 
-        if candidate is not None:
+        if (
+            candidate is not None
+            and
+            feasible(candidate)
+        ):
             return candidate
 
     return None
 
 
-# ============================================================
-# QACVRP
-# ============================================================
-
+# simulated quantum annealing
 def qacvrp(
     P=40,
     T=0.0225,
@@ -722,10 +719,8 @@ def qacvrp(
     Mc=20_000
 ):
 
-    # --------------------------------------------------------
-    # INITIALISE P REPLICAS
-    # --------------------------------------------------------
-
+    # initialise p replicas (p random solutions)
+    # these are spin matrices
     replicas = []
 
     for _ in range(P):
@@ -735,47 +730,41 @@ def qacvrp(
         replicas.append({
             "solution": solution,
             "edges": solution_to_edges(solution),
-            "cost": solution_cost(solution)
+            "objective": objective(solution)
         })
 
-    # --------------------------------------------------------
-    # INITIAL BEST
-    # --------------------------------------------------------
-
+    # initial best solution
     best_replica = min(
         replicas,
-        key=lambda x: x["cost"]
+        key=lambda x: x["objective"]
     )
 
     best_solution = copy_solution(
         best_replica["solution"]
     )
 
-    best_cost = best_replica["cost"]
+    best_objective = best_replica["objective"]
 
-    # --------------------------------------------------------
-    # MAIN MONTE CARLO LOOP
-    # --------------------------------------------------------
-
+    # monte carlo loop
     for mc in range(Mc):
-
-        # ----------------------------------------------------
-        # PAPER:
-        #
-        # J = -(T/2) ln[tanh(gamma/(P*T))]
-        # ----------------------------------------------------
 
         x = gamma / (P * T)
 
+        #coupling strength J
+        #
+        # The P replicas form a ring.
+        # J controls how strongly neighbouring
+        # replicas are coupled.
+        #
+        # From the paper:
+        #
+        # J = -(T/2) ln[tanh(gamma/(P*T))]
+        #
         J = -(
             T / 2.0
         ) * math.log(
             math.tanh(x)
         )
-
-        # ----------------------------------------------------
-        # REPLICA LOOP
-        # ----------------------------------------------------
 
         for z in range(P):
 
@@ -789,10 +778,7 @@ def qacvrp(
                 (z + 1) % P
             ]
 
-            # ------------------------------------------------
-            # Generate candidate
-            # ------------------------------------------------
-
+            # perturb solution
             candidate_solution = make_neighbour(
                 current["solution"]
             )
@@ -800,31 +786,22 @@ def qacvrp(
             if candidate_solution is None:
                 continue
 
-            # ------------------------------------------------
-            # Candidate edge representation
-            # ------------------------------------------------
-
             candidate_edges = solution_to_edges(
                 candidate_solution
             )
 
-            candidate_cost = solution_cost(
+            candidate_objective = objective(
                 candidate_solution
             )
 
-            # ------------------------------------------------
-            # Delta H_pot
-            # ------------------------------------------------
-
+            # change in potential energy
+            # change in objective cost of solution
             delta_H_pot = (
-                candidate_cost
-                - current["cost"]
+                candidate_objective
+                - current["objective"]
             )
 
-            # ------------------------------------------------
-            # Delta H_kin
-            # ------------------------------------------------
-
+    
             old_spin_product = spin_products(
                 previous["edges"],
                 current["edges"],
@@ -837,35 +814,45 @@ def qacvrp(
                 next_replica["edges"]
             )
 
+            # change in kinetic energy
+            # Compare the candidate's spin coupling with the
+            # current spin coupling:
+            #
+            # Delta H_kin =
+            #       H_kin(candidate)
+            #       - H_kin(current)
+            #
+            # A larger spin product means the candidate shares
+            # more edges with its neighbouring replicas.
             delta_H_kin = (
                 new_spin_product
                 - old_spin_product
             )
 
-            # ------------------------------------------------
-            # Delta H
+            # change in total energy
+            # A negative Delta H means that the candidate has a lower
+            # effective Hamiltonian and is therefore energetically
+            # favourable.
             #
-            # Paper:
+            # a candidate can have a worse CVRP objective
+            # (Delta H_pot > 0) but still have a favourable total
+            # Delta H if it becomes more strongly coupled to its
+            # neighbouring replicas. This is the key feature that gives
+            # simulated quantum annealing its quantum-annealing
+            # behaviour, rather than simply behaving like ordinary
+            # simulated annealing.
             #
-            # Delta H =
-            # Delta Hpot / P
-            # +
-            # J Delta Hkin
-            # ------------------------------------------------
-
             delta_H = (
                 delta_H_pot / P
                 -
                 J * delta_H_kin
             )
 
-            # ------------------------------------------------
-            # ACCEPTANCE
-            # ------------------------------------------------
 
             accept = False
 
-            # Paper line 12
+            # always accept if cvrp obj improved
+            # or if total energy decreased
             if (
                 delta_H_pot <= 0
                 or
@@ -874,6 +861,7 @@ def qacvrp(
 
                 accept = True
 
+            # accept worse solutions with some probability
             else:
 
                 exponent = -delta_H / T
@@ -884,16 +872,10 @@ def qacvrp(
                         exponent
                     )
 
-                    if (
-                        random.random()
-                        < probability
-                    ):
+                    if random.random() < probability:
                         accept = True
 
-            # ------------------------------------------------
-            # ACCEPT CANDIDATE
-            # ------------------------------------------------
-
+            # accept candidate solution
             if accept:
 
                 replicas[z]["solution"] = (
@@ -904,35 +886,31 @@ def qacvrp(
                     candidate_edges
                 )
 
-                replicas[z]["cost"] = (
-                    candidate_cost
+                replicas[z]["objective"] = (
+                    candidate_objective
                 )
 
-                # --------------------------------------------
-                # GLOBAL BEST
-                # --------------------------------------------
+                # if new best
+                if (
+                    candidate_objective
+                    < best_objective
+                ):
 
-                if candidate_cost < best_cost:
-
-                    best_cost = candidate_cost
+                    best_objective = (
+                        candidate_objective
+                    )
 
                     best_solution = copy_solution(
                         candidate_solution
                     )
 
-        # ----------------------------------------------------
-        # Gamma decrement
-        # ----------------------------------------------------
-
+        # potentially decrease gamma
         gamma = max(
             0.0,
             gamma - gamma_decrement
         )
 
-        # ----------------------------------------------------
-        # Progress
-        # ----------------------------------------------------
-
+        # next step
         if (
             (mc + 1)
             % max(1, Mc // 10)
@@ -941,12 +919,18 @@ def qacvrp(
 
             print(
                 f"MC {mc + 1}/{Mc} | "
-                f"Best = {best_cost:.2f} | "
+                f"Vehicles = {len(best_solution)} | "
+                f"Distance = "
+                f"{distance_cost(best_solution):.2f} | "
                 f"gamma = {gamma:.4f} | "
                 f"J = {J:.6f}"
             )
 
-    return best_solution, best_cost
+    return (
+        best_solution,
+        len(best_solution),
+        distance_cost(best_solution)
+    )
 
 
 # ============================================================
@@ -956,7 +940,9 @@ def qacvrp(
 if __name__ == "__main__":
 
     print("=" * 70)
-    print("QACVRP - Crispin & Syrichas PIMC Quantum Annealing")
+    print(
+        "QACVRP - Primary Vehicle Minimisation"
+    )
     print("=" * 70)
 
     print(
@@ -969,7 +955,12 @@ if __name__ == "__main__":
 
     print(
         f"Effective quantum temperature PT = "
-        f"{P*T:.4f}"
+        f"{P * T:.4f}"
+    )
+
+    print(
+        f"Vehicle penalty = "
+        f"{VEHICLE_PENALTY:.2f}"
     )
 
     print()
@@ -981,7 +972,11 @@ if __name__ == "__main__":
 
         start = time.time()
 
-        best_solution, best_cost = qacvrp(
+        (
+            best_solution,
+            vehicles,
+            distance
+        ) = qacvrp(
             P=P,
             T=T,
             gamma=GAMMA,
@@ -991,12 +986,16 @@ if __name__ == "__main__":
 
         elapsed = time.time() - start
 
-        results.append(best_cost)
+        results.append(
+            (vehicles, distance)
+        )
+
         runtimes.append(elapsed)
 
         print(
             f"Run {run + 1}: "
-            f"cost={best_cost:.2f}, "
+            f"vehicles={vehicles}, "
+            f"distance={distance:.2f}, "
             f"time={elapsed:.3f}s"
         )
 
@@ -1004,14 +1003,43 @@ if __name__ == "__main__":
     # SUMMARY
     # ========================================================
 
-    mean_cost = np.mean(results)
-    best_cost = np.min(results)
-    std_cost = np.std(results)
-    mean_runtime = np.mean(runtimes)
+    vehicle_counts = [
+        x[0]
+        for x in results
+    ]
 
-    gap = (
-        (best_cost - OPTIMAL_COST)
-        / OPTIMAL_COST
+    distances = [
+        x[1]
+        for x in results
+    ]
+
+    mean_vehicles = np.mean(
+        vehicle_counts
+    )
+
+    best_vehicles = min(
+        vehicle_counts
+    )
+
+    mean_distance = np.mean(
+        distances
+    )
+
+    best_distance = min(
+        distances
+    )
+
+    std_distance = np.std(
+        distances
+    )
+
+    mean_runtime = np.mean(
+        runtimes
+    )
+
+    distance_gap = (
+        (mean_distance - OPTIMAL_DISTANCE)
+        / OPTIMAL_DISTANCE
         * 100
     )
 
@@ -1019,23 +1047,39 @@ if __name__ == "__main__":
     print("=" * 70)
 
     print(
-        f"Mean cost:       {mean_cost:.2f}"
+        f"Mean vehicles:   "
+        f"{mean_vehicles:.2f}"
     )
 
     print(
-        f"Best cost:       {best_cost:.2f}"
+        f"Best vehicles:   "
+        f"{best_vehicles}"
     )
 
     print(
-        f"Std deviation:   {std_cost:.2f}"
+        f"Mean distance:   "
+        f"{mean_distance:.2f}"
     )
 
     print(
-        f"Mean runtime:    {mean_runtime:.3f} seconds"
+        f"Best distance:   "
+        f"{best_distance:.2f}"
     )
 
     print(
-        f"Gap to optimal:  {gap:.2f}%"
+        f"Std distance:    "
+        f"{std_distance:.2f}"
+    )
+
+    print(
+        f"Mean runtime:    "
+        f"{mean_runtime:.3f} seconds"
+    )
+
+    print(
+        f"Distance gap:    "
+        f"{distance_gap:.2f}%"
     )
 
     print("=" * 70)
+

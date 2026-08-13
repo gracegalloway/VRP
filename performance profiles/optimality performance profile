@@ -1,0 +1,206 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# ============================================================
+# DATA
+# ============================================================
+
+data = {
+    "Instance": [
+        "E-n76-k8",
+        "P-n23-k8",
+        "B-n50-k8",
+        "A-n33-k5",
+        "B-n35-k5",
+        "B-n66-k9",
+        "P-n19-k2",
+        "B-n38-k6",
+        "E-n101-k8",
+        "A-n37-k6",
+        "A-n64-k9",
+        "B-n41-k6",
+        "B-n31-k5",
+        "A-n45-k7",
+        "E-n23-k3",
+        "E-n76-k14",
+        "P-n20-k2",
+        "P-n40-k5",
+        "P-n50-k10",
+        "P-n60-k15",
+        "P-n70-k10",
+        "E-n33-k4",
+        "B-n68-k9",
+        "A-n63-k10",
+        "A-n39-k6",
+        "P-n16-k8",
+        "B-n43-k6",
+        "M-n101-k10",
+        "A-n53-k7",
+        "E-n76-k10",
+        "P-n60-k10",
+        "E-n22-k4",
+        "P-n76-k5",
+        "B-n64-k9",
+        "A-n32-k5",
+        "A-n36-k5",
+        "B-n45-k6",
+        "B-n78-k10",
+        "P-n50-k8",
+        "E-n30-k3"
+    ],
+
+    "SA": [
+        3.86, 0.34, 0.79, 0.18, 0.63,
+        1.91, 0.00, 0.77, 3.75, 1.71,
+        3.84, 1.25, 0.27, 3.40, 0.00,
+        3.66, 0.00, 1.27, 3.07, 2.33,
+        4.26, 0.34, 2.31, 1.78, 1.52,
+        0.00, 0.30, 1.59, 5.98, 5.90,
+        3.55, 0.00, 6.00, 6.06, 1.17,
+        1.78, 26.87, 5.72, 1.81, 0.82
+    ],
+
+    "ALNS": [
+        1.31, 0.00, 0.61, 0.24, 0.80,
+        1.78, 0.85, 0.87, 1.52, 1.12,
+        2.51, 0.43, 0.74, 2.72, 0.00,
+        6.99, 0.46, 0.00, 10.03, 1.96,
+        2.68, 0.46, 1.98, 1.87, 0.43,
+        0.00, 0.16, 1.49, 1.76, 1.95,
+        2.34, 0.05, 2.01, 7.32, 4.82,
+        1.80, 3.33, 4.24, 1.81, 0.86
+    ],
+
+    "GA": [
+        5.25, 2.57, 2.29, 0.67, 0.92,
+        6.38, 7.26, 1.57, 9.67, 2.32,
+        5.45, 3.31, 1.01, 4.87, 0.32,
+        7.27, 0.09, 3.62, 2.64, 5.76,
+        6.87, 0.14, 2.59, 3.93, 2.45,
+        0.00, 1.19, 1.27, 2.50, 7.61,
+        5.73, 0.00, 6.44, 10.41, 5.84,
+        0.73, 10.74, 2.62, 16.86, 1.87
+    ],
+
+    "QA": [
+        5.25, 0.00, 0.98, 0.00, 0.00,
+        1.84, 0.00, 0.05, 7.63, 0.76,
+        4.14, 0.19, 0.00, 1.92, 0.00,
+        6.37, 0.00, 0.00, 1.55, 1.63,
+        5.34, 0.00, 2.33, 2.39, 0.24,
+        0.00, 0.00, 11.80, 2.71, 7.42,
+        2.37, 0.00, 6.12, 6.36, 0.00,
+        0.88, 2.63, 5.68, 6.59, 0.00
+    ]
+}
+
+df = pd.DataFrame(data)
+
+algorithms = ["SA", "ALNS", "GA", "QA"]
+
+# ============================================================
+# PERFORMANCE PROFILE FUNCTION
+# ============================================================
+
+def performance_profile(gaps):
+    """
+    Calculate cumulative performance profile.
+
+    gaps = percentage gaps to optimal for one algorithm
+    """
+
+    gaps = np.sort(np.asarray(gaps))
+
+    n = len(gaps)
+
+    x = np.concatenate(([0], gaps))
+    y = np.concatenate(([0], np.arange(1, n + 1) / n))
+
+    return x, y
+
+
+# ============================================================
+# NORMAL GAP PERFORMANCE PROFILE
+# ============================================================
+
+plt.figure(figsize=(9, 6))
+
+for alg in algorithms:
+
+    x, y = performance_profile(df[alg])
+
+    plt.step(
+        x,
+        y,
+        where="post",
+        label=alg
+    )
+
+plt.xlabel(r"$\tau$ Gap to optimal (%)")
+plt.ylabel(r"$\rho_s(\tau)$")
+plt.title("Performance Profile Based on Gap to Optimal")
+
+plt.xlim(left=0)
+plt.ylim(0, 1.02)
+
+plt.grid(True, alpha=0.3)
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig(
+    "gap_performance_profile.png",
+    dpi=300,
+    bbox_inches="tight"
+)
+
+plt.show()
+
+
+# ============================================================
+# LOG-SCALE GAP PERFORMANCE PROFILE
+# ============================================================
+
+plt.figure(figsize=(9, 6))
+
+for alg in algorithms:
+
+    gaps = np.sort(df[alg].values)
+
+    # Log scale cannot display zero.
+    # Replace zero with a very small positive value.
+    gaps_plot = np.where(gaps == 0, 0.01, gaps)
+
+    n = len(gaps_plot)
+
+    x = np.concatenate(([0.01], gaps_plot))
+    y = np.concatenate(([0], np.arange(1, n + 1) / n))
+
+    plt.step(
+        x,
+        y,
+        where="post",
+        label=alg
+    )
+
+plt.xscale("log")
+
+plt.xlabel(r"$\tau$ Gap to optimal (%)")
+plt.ylabel(r"$\rho_s(\tau)$")
+plt.title("Performance Profile Based on Gap to Optimal (Log Scale)")
+
+plt.ylim(0, 1.02)
+
+plt.grid(True, alpha=0.3)
+plt.legend()
+
+plt.tight_layout()
+
+plt.savefig(
+    "gap_performance_profile_log.png",
+    dpi=300,
+    bbox_inches="tight"
+)
+
+plt.show()
